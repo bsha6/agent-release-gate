@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 DirectoryIdentity = tuple[int, int]
+FileIdentity = tuple[int, int]
 
 
 def close_best_effort(descriptor: int) -> None:
@@ -30,6 +31,11 @@ def directory_flags() -> int:
 
 
 def directory_identity(descriptor: int) -> DirectoryIdentity:
+    observed = os.fstat(descriptor)
+    return observed.st_dev, observed.st_ino
+
+
+def file_identity(descriptor: int) -> FileIdentity:
     observed = os.fstat(descriptor)
     return observed.st_dev, observed.st_ino
 

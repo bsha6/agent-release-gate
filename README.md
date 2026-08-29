@@ -66,7 +66,8 @@ Evaluation inputs and the validated benchmark checkout are pinned by file
 descriptor, and output is written atomically through a held directory
 descriptor. A failed evaluation leaves an existing output file unchanged;
 concurrent path or parent-symlink swaps cannot substitute an input, mix
-checkout provenance, or redirect the write into the checkout.
+checkout provenance, redirect the write into the checkout, or overwrite a
+protected input through a case-variant or hard-link alias.
 
 Exit codes are:
 

@@ -10,7 +10,11 @@ permissions:
 
 jobs:
   test-package:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"

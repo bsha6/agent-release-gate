@@ -228,6 +228,20 @@ class IntegrationValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(IntegrationError, "prohibited_paths entries must be safe relative paths"):
             self.manifest(prohibited_paths=["../escape"])
 
+    def test_case_variant_of_project_is_not_checkout(self) -> None:
+        checkout_alias = self.project_root.parent / self.project_root.name.upper()
+        if not checkout_alias.is_dir():
+            self.skipTest("requires a case-insensitive filesystem")
+        manifest = self.manifest(
+            updates={"checkout_path": f"../{self.project_root.name.upper()}"}
+        )
+
+        with self.assertRaisesRegex(
+            IntegrationError,
+            "distinct direct sibling",
+        ):
+            validate_integration(manifest)
+
     def test_manifest_rejects_unsafe_adapter_names(self) -> None:
         for adapter in ("ClawProBench", "claw pro bench", "-clawprobench"):
             with self.subTest(adapter=adapter):

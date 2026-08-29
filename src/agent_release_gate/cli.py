@@ -17,9 +17,11 @@ from agent_release_gate.adapters.registry import get_adapter
 from agent_release_gate.domain.policy import PolicyError, load_policy
 from agent_release_gate.evaluation.evaluator import evaluate
 from agent_release_gate.filesystem import (
+    FileIdentity,
     close_best_effort,
     directory_identity,
     directory_is_within,
+    file_identity,
     open_directory,
     open_regular_file,
     same_directory,
@@ -71,6 +73,7 @@ class _OutputTarget:
     directory_fd: int
     name: str
     display_path: Path
+    protected_file_identities: tuple[FileIdentity, ...]
 
     def close(self) -> None:
         directory_fd = self.directory_fd
@@ -177,6 +180,14 @@ def _write_json_atomic(
             temporary.write(serialized)
             temporary.flush()
             os.fsync(temporary.fileno())
+        if _leaf_matches_protected_input(
+            target.directory_fd,
+            target.name,
+            target.protected_file_identities,
+        ):
+            raise DecisionWriteError(
+                "output path must not overwrite an evaluation input"
+            )
         os.replace(
             temporary_name,
             target.name,
@@ -190,6 +201,8 @@ def _write_json_atomic(
             # The rename has already committed the new file. Reporting failure
             # here would falsely promise that an existing output was preserved.
             pass
+    except DecisionWriteError:
+        raise
     except (OSError, TypeError, ValueError) as exc:
         raise DecisionWriteError(
             f"unable to write decision {target.display_path}: {exc}"
@@ -222,6 +235,19 @@ def _validate_output_path(
             "output path must not overwrite an evaluation input"
         )
     return resolved_output
+
+
+def _leaf_matches_protected_input(
+    directory_fd: int,
+    name: str,
+    protected_identities: Sequence[FileIdentity],
+) -> bool:
+    try:
+        observed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    observed_identity = observed.st_dev, observed.st_ino
+    return observed_identity in protected_identities
 
 
 def _prepare_output_target(
@@ -265,33 +291,50 @@ def _prepare_output_target(
                 "output path must not be inside the benchmark checkout"
             )
 
+        protected_identities: list[FileIdentity] = []
         for protected in protected_files:
-            if isinstance(protected, _InputTarget):
-                protected_name = protected.name
-                protected_parent_fd = protected.directory_fd
-                close_protected_parent = False
-            else:
-                resolved_protected = protected.resolve(strict=False)
-                protected_name = resolved_protected.name
-                protected_parent_fd, _ = open_directory(resolved_protected.parent)
-                close_protected_parent = True
-            if output_name != protected_name:
-                if close_protected_parent:
-                    os.close(protected_parent_fd)
-                continue
+            protected_parent_fd: int | None = None
+            close_protected_parent = False
             try:
-                if same_directory(directory_fd, protected_parent_fd):
+                if isinstance(protected, _InputTarget):
+                    protected_name = protected.name
+                    protected_parent_fd = protected.directory_fd
+                    protected_identities.append(file_identity(protected.file_fd))
+                else:
+                    resolved_protected = protected.resolve(strict=False)
+                    protected_name = resolved_protected.name
+                    protected_parent_fd, _ = open_directory(
+                        resolved_protected.parent
+                    )
+                    close_protected_parent = True
+                    observed = os.stat(resolved_protected, follow_symlinks=False)
+                    protected_identities.append((observed.st_dev, observed.st_ino))
+                assert protected_parent_fd is not None
+                if output_name == protected_name and same_directory(
+                    directory_fd,
+                    protected_parent_fd,
+                ):
                     raise DecisionWriteError(
                         "output path must not overwrite an evaluation input"
                     )
             finally:
-                if close_protected_parent:
-                    os.close(protected_parent_fd)
+                if close_protected_parent and protected_parent_fd is not None:
+                    close_best_effort(protected_parent_fd)
+
+        if _leaf_matches_protected_input(
+            directory_fd,
+            output_name,
+            protected_identities,
+        ):
+            raise DecisionWriteError(
+                "output path must not overwrite an evaluation input"
+            )
 
         target = _OutputTarget(
             directory_fd=directory_fd,
             name=output_name,
             display_path=output,
+            protected_file_identities=tuple(protected_identities),
         )
         directory_fd = None
         return target

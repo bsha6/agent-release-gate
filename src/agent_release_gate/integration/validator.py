@@ -11,8 +11,10 @@ from typing import Any
 from agent_release_gate.filesystem import (
     DirectoryIdentity,
     close_best_effort,
+    directory_flags,
     directory_identity,
     open_directory,
+    same_directory,
 )
 
 
@@ -25,6 +27,7 @@ class IntegrationManifest:
     adapter: str
     name: str
     repository_url: str
+    project_path: Path
     checkout_path: Path
     commit: str
     prohibited_paths: tuple[str, ...]
@@ -141,6 +144,7 @@ def load_manifest(path: Path, *, project_root: Path) -> IntegrationManifest:
         adapter=adapter,
         name=name,
         repository_url=repository_url,
+        project_path=resolved_project_root,
         checkout_path=checkout_path,
         commit=commit,
         prohibited_paths=tuple(prohibited_paths),
@@ -192,11 +196,36 @@ def validate_integration(manifest: IntegrationManifest) -> IntegrationEvidence:
         raise IntegrationError(f"checkout does not exist or is not a directory: {checkout}")
 
     checkout_fd: int | None = None
+    project_fd: int | None = None
+    checkout_parent_fd: int | None = None
+    project_parent_fd: int | None = None
     try:
         try:
             checkout_fd, _ = open_directory(checkout)
         except OSError as exc:
             raise IntegrationError(f"unable to pin checkout {checkout}: {exc}") from exc
+
+        try:
+            project_fd, _ = open_directory(manifest.project_path)
+            checkout_parent_fd = os.open(
+                "..",
+                directory_flags(),
+                dir_fd=checkout_fd,
+            )
+            project_parent_fd = os.open(
+                "..",
+                directory_flags(),
+                dir_fd=project_fd,
+            )
+        except OSError as exc:
+            raise IntegrationError(f"unable to verify checkout placement: {exc}") from exc
+        if same_directory(checkout_fd, project_fd) or not same_directory(
+            checkout_parent_fd,
+            project_parent_fd,
+        ):
+            raise IntegrationError(
+                "checkout must be a distinct direct sibling of the project"
+            )
 
         worktree = _git(checkout_fd, "rev-parse", "--is-inside-work-tree")
         if worktree.returncode != 0 or worktree.stdout.strip() != "true":
@@ -259,5 +288,11 @@ def validate_integration(manifest: IntegrationManifest) -> IntegrationEvidence:
         checkout_fd = None
         return evidence
     finally:
-        if checkout_fd is not None:
-            close_best_effort(checkout_fd)
+        for descriptor in (
+            checkout_fd,
+            project_fd,
+            checkout_parent_fd,
+            project_parent_fd,
+        ):
+            if descriptor is not None:
+                close_best_effort(descriptor)

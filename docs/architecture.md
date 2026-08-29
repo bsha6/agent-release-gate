@@ -94,16 +94,20 @@ The integration manifest declares the adapter that may consume its evidence.
 This prevents a CLI invocation from presenting one benchmark's source
 provenance alongside a different adapter. Prohibited paths are detected even
 when represented by dangling symlinks. The checkout must resolve to a distinct
-direct sibling; the project itself and sibling symlinks back to it are rejected.
+direct sibling. Held project, checkout, and parent descriptors are compared by
+device and inode, so the project itself, case-variant aliases, and sibling
+symlinks back to it are rejected.
 
 Before evaluation, the CLI opens and pins the report, policy, and integration
 manifest by file and parent-directory descriptor, and the validator pins the
 benchmark checkout by directory descriptor. It then resolves the requested
 output path, opens its directory without following the final path component,
 and verifies the opened directory by device and inode. It rejects paths inside
-the held benchmark checkout and paths equal to a pinned input, including
-aliases reached through symlinked parents. Pinned descriptors are used for
-every input read and for creating and replacing the decision file, so
+the held benchmark checkout and destination leaves with the same device and
+inode as a pinned input, including case variants, hard links, and aliases
+reached through symlinked parents. It repeats the input-identity check
+immediately before replacement. Pinned descriptors are used for every input
+read and for creating and replacing the decision file, so
 concurrent path and parent-symlink swaps cannot substitute an input, mix
 checkout validation, or redirect the write into the checkout. The resolved
 checkout path stays internal and is not serialized.

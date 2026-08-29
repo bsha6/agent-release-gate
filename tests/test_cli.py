@@ -4,6 +4,7 @@ import errno
 import hashlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import chdir
@@ -191,6 +192,55 @@ class CliTests(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertIn("must not overwrite an evaluation input", stderr)
         self.assertEqual(original, report.read_bytes())
+
+    def test_output_hard_link_cannot_overwrite_report(self) -> None:
+        report = self.project_root / "report.json"
+        original = (FIXTURES / "clawprobench_go.json").read_bytes()
+        report.write_bytes(original)
+        output = self.project_root / "decision.json"
+        os.link(report, output)
+
+        code, _, stderr = self.invoke(self.evaluate_args(report, output))
+
+        self.assertEqual(2, code)
+        self.assertIn("must not overwrite an evaluation input", stderr)
+        self.assertEqual(original, report.read_bytes())
+        self.assertEqual(original, output.read_bytes())
+
+    def test_output_case_variant_cannot_overwrite_report(self) -> None:
+        report = self.project_root / "report.json"
+        original = (FIXTURES / "clawprobench_go.json").read_bytes()
+        report.write_bytes(original)
+        output = self.project_root / "REPORT.JSON"
+        if not output.exists():
+            self.skipTest("requires a case-insensitive filesystem")
+
+        code, _, stderr = self.invoke(self.evaluate_args(report, output))
+
+        self.assertEqual(2, code)
+        self.assertIn("must not overwrite an evaluation input", stderr)
+        self.assertEqual(original, report.read_bytes())
+
+    def test_protected_input_linked_to_output_before_replace_is_preserved(self) -> None:
+        report = self.project_root / "report.json"
+        original = (FIXTURES / "clawprobench_go.json").read_bytes()
+        report.write_bytes(original)
+        output = self.project_root / "decision.json"
+
+        with _prepare_output_target(
+            output,
+            protected_files=(report, POLICY, self.manifest),
+            protected_directory=self.checkout,
+        ) as target:
+            os.link(report, output)
+            with self.assertRaisesRegex(
+                ValueError,
+                "must not overwrite an evaluation input",
+            ):
+                _write_json_atomic(target, {"decision": "go"})
+
+        self.assertEqual(original, report.read_bytes())
+        self.assertEqual(original, output.read_bytes())
 
     def test_output_cannot_overwrite_policy(self) -> None:
         policy = self.project_root / "policy.toml"
