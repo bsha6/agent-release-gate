@@ -47,7 +47,9 @@ No package installation is needed for repository development. Prefix commands wi
 PYTHONPATH=src python3.14 -m agent_release_gate doctor
 ```
 
-`doctor` validates the checkout, origin URL, audited commit, clean worktree, and absence of prohibited vendored directories. It never runs upstream code.
+`doctor` pins and validates the checkout, origin URL, audited commit, clean
+worktree, and absence of prohibited vendored directories. It never runs
+upstream code.
 
 ## Evaluate a Report
 
@@ -60,10 +62,11 @@ PYTHONPATH=src python3.14 -m agent_release_gate evaluate \
   --output decisions/release-decision.json
 ```
 
-Evaluation inputs are pinned by file descriptor, and output is written
-atomically through a held directory descriptor. A failed evaluation leaves an
-existing output file unchanged; concurrent parent-symlink swaps cannot
-substitute an input or redirect the write.
+Evaluation inputs and the validated benchmark checkout are pinned by file
+descriptor, and output is written atomically through a held directory
+descriptor. A failed evaluation leaves an existing output file unchanged;
+concurrent path or parent-symlink swaps cannot substitute an input, mix
+checkout provenance, or redirect the write into the checkout.
 
 Exit codes are:
 
@@ -145,7 +148,8 @@ for the complete build, test, CI, upstream, and audit inventory.
 - The CLI does not fetch or execute benchmark code.
 - Decision output must be separate from reports, policies, manifests, and
   benchmark checkouts; protected paths are rejected after symlink resolution
-  while input files and the output directory remain pinned by descriptor.
+  while input files, the benchmark checkout, and the output directory remain
+  pinned by descriptor.
 - The source distribution includes the default policy and integration manifest.
   A standalone wheel contains only the CLI package, so invoke it from a source
   checkout or pass explicit `--policy` and `--integration` paths.

@@ -8,6 +8,13 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from agent_release_gate.filesystem import (
+    DirectoryIdentity,
+    close_best_effort,
+    directory_identity,
+    open_directory,
+)
+
 
 class IntegrationError(ValueError):
     """Raised when benchmark provenance cannot be established."""
@@ -23,13 +30,29 @@ class IntegrationManifest:
     prohibited_paths: tuple[str, ...]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class IntegrationEvidence:
     adapter: str
     name: str
     checkout_path: Path
     repository_url: str
     commit: str
+    checkout_fd: int
+
+    @property
+    def checkout_identity(self) -> DirectoryIdentity:
+        return directory_identity(self.checkout_fd)
+
+    def close(self) -> None:
+        checkout_fd = self.checkout_fd
+        self.checkout_fd = -1
+        close_best_effort(checkout_fd)
+
+    def __enter__(self) -> IntegrationEvidence:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -124,7 +147,7 @@ def load_manifest(path: Path, *, project_root: Path) -> IntegrationManifest:
     )
 
 
-def _git(checkout: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _git(checkout_fd: int, *args: str) -> subprocess.CompletedProcess[str]:
     environment = {
         key: value
         for key, value in os.environ.items()
@@ -139,6 +162,10 @@ def _git(checkout: Path, *args: str) -> subprocess.CompletedProcess[str]:
             "GIT_TERMINAL_PROMPT": "0",
         }
     )
+
+    def enter_checkout() -> None:
+        os.fchdir(checkout_fd)
+
     return subprocess.run(
         [
             "git",
@@ -148,14 +175,14 @@ def _git(checkout: Path, *args: str) -> subprocess.CompletedProcess[str]:
             "core.fsmonitor=false",
             "-c",
             "core.untrackedCache=false",
-            "-C",
-            str(checkout),
             *args,
         ],
         check=False,
         capture_output=True,
         text=True,
         env=environment,
+        pass_fds=(checkout_fd,),
+        preexec_fn=enter_checkout,
     )
 
 
@@ -164,52 +191,73 @@ def validate_integration(manifest: IntegrationManifest) -> IntegrationEvidence:
     if not checkout.is_dir():
         raise IntegrationError(f"checkout does not exist or is not a directory: {checkout}")
 
-    worktree = _git(checkout, "rev-parse", "--is-inside-work-tree")
-    if worktree.returncode != 0 or worktree.stdout.strip() != "true":
-        raise IntegrationError(f"checkout is not a Git worktree: {checkout}")
+    checkout_fd: int | None = None
+    try:
+        try:
+            checkout_fd, _ = open_directory(checkout)
+        except OSError as exc:
+            raise IntegrationError(f"unable to pin checkout {checkout}: {exc}") from exc
 
-    top_level = _git(checkout, "rev-parse", "--show-toplevel")
-    observed_top_level = (
-        Path(top_level.stdout.strip()).resolve()
-        if top_level.returncode == 0 and top_level.stdout.strip()
-        else None
-    )
-    if observed_top_level != checkout.resolve():
-        raise IntegrationError(f"checkout is not a Git worktree root: {checkout}")
+        worktree = _git(checkout_fd, "rev-parse", "--is-inside-work-tree")
+        if worktree.returncode != 0 or worktree.stdout.strip() != "true":
+            raise IntegrationError(f"checkout is not a Git worktree: {checkout}")
 
-    failures: list[str] = []
-    head = _git(checkout, "rev-parse", "HEAD")
-    observed_commit = head.stdout.strip() if head.returncode == 0 else "unavailable"
-    if observed_commit != manifest.commit:
-        failures.append(
-            f"expected commit {manifest.commit}, observed {observed_commit}"
-        )
+        prefix = _git(checkout_fd, "rev-parse", "--show-prefix")
+        if prefix.returncode != 0 or prefix.stdout.strip():
+            raise IntegrationError(f"checkout is not a Git worktree root: {checkout}")
 
-    origin = _git(checkout, "remote", "get-url", "origin")
-    observed_origin = origin.stdout.strip() if origin.returncode == 0 else "unavailable"
-    if observed_origin != manifest.repository_url:
-        failures.append(
-            f"unexpected origin URL: expected {manifest.repository_url}, observed {observed_origin}"
-        )
+        failures: list[str] = []
+        head = _git(checkout_fd, "rev-parse", "HEAD")
+        observed_commit = head.stdout.strip() if head.returncode == 0 else "unavailable"
+        if observed_commit != manifest.commit:
+            failures.append(
+                f"expected commit {manifest.commit}, observed {observed_commit}"
+            )
 
-    status = _git(checkout, "status", "--porcelain")
-    if status.returncode != 0:
-        failures.append("unable to determine worktree status")
-    elif status.stdout:
-        failures.append("worktree is not clean")
+        origin = _git(checkout_fd, "remote", "get-url", "origin")
+        observed_origin = origin.stdout.strip() if origin.returncode == 0 else "unavailable"
+        if observed_origin != manifest.repository_url:
+            failures.append(
+                f"unexpected origin URL: expected {manifest.repository_url}, observed {observed_origin}"
+            )
 
-    for prohibited_path in manifest.prohibited_paths:
-        candidate = checkout / prohibited_path
-        if candidate.exists() or candidate.is_symlink():
+        status = _git(checkout_fd, "status", "--porcelain")
+        if status.returncode != 0:
+            failures.append("unable to determine worktree status")
+        elif status.stdout:
+            failures.append("worktree is not clean")
+
+        for prohibited_path in manifest.prohibited_paths:
+            try:
+                os.stat(
+                    prohibited_path,
+                    dir_fd=checkout_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                failures.append(
+                    f"unable to inspect prohibited path {prohibited_path}: {exc}"
+                )
+                continue
             failures.append(f"prohibited path is present: {prohibited_path}")
 
-    if failures:
-        raise IntegrationError("integration validation failed: " + "; ".join(failures))
+        if failures:
+            raise IntegrationError(
+                "integration validation failed: " + "; ".join(failures)
+            )
 
-    return IntegrationEvidence(
-        adapter=manifest.adapter,
-        name=manifest.name,
-        checkout_path=checkout,
-        repository_url=manifest.repository_url,
-        commit=manifest.commit,
-    )
+        evidence = IntegrationEvidence(
+            adapter=manifest.adapter,
+            name=manifest.name,
+            checkout_path=checkout,
+            repository_url=manifest.repository_url,
+            commit=manifest.commit,
+            checkout_fd=checkout_fd,
+        )
+        checkout_fd = None
+        return evidence
+    finally:
+        if checkout_fd is not None:
+            close_best_effort(checkout_fd)

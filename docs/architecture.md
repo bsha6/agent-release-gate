@@ -32,8 +32,9 @@ For `doctor`:
 
 1. Load and strictly validate the integration manifest.
 2. Bind the manifest's declared adapter to the registry key used for evaluation.
-3. Resolve its checkout as a direct sibling of this repository.
-4. Verify Git worktree state, `HEAD`, `origin`, cleanliness, and prohibited paths.
+3. Resolve and descriptor-pin its checkout as a direct sibling of this repository.
+4. Verify Git worktree state, `HEAD`, `origin`, cleanliness, and prohibited paths
+   relative to that held descriptor.
 5. Emit validated provenance as JSON without the absolute local checkout path.
 
 For `evaluate`:
@@ -75,12 +76,19 @@ The evaluation timestamp is the only time-varying output field. Tests inject a c
 The integration manifest pins the expected origin and full Git commit. Validation uses only:
 
 - `git rev-parse --is-inside-work-tree`;
-- `git rev-parse --show-toplevel`;
+- `git rev-parse --show-prefix`;
 - `git rev-parse HEAD`;
 - `git remote get-url origin`;
 - `git status --porcelain`.
 
 Git hooks and fsmonitor are disabled for these read-only subprocesses, terminal prompts are disabled, and `GIT_OPTIONAL_LOCKS=0` prevents status checks from refreshing the upstream index. The validator also disables Git's untracked cache, ignores global/system Git configuration, and removes inherited `GIT_*` variables before setting its explicit safe environment. This prevents ambient `GIT_DIR`, `GIT_WORK_TREE`, or index overrides from redirecting a probe away from the pinned checkout. Validation never fetches, checks out, resets, cleans, or writes upstream files.
+
+The validator opens the resolved checkout through a no-follow descriptor walk
+and retains that descriptor through integration validation and output-path
+validation. Git subprocesses enter the held directory by descriptor, and
+prohibited paths are inspected relative to it. Renaming or replacing the
+manifest path therefore cannot mix provenance from one checkout with
+cleanliness from another or make output protection follow a replacement path.
 
 The integration manifest declares the adapter that may consume its evidence.
 This prevents a CLI invocation from presenting one benchmark's source
@@ -89,14 +97,16 @@ when represented by dangling symlinks. The checkout must resolve to a distinct
 direct sibling; the project itself and sibling symlinks back to it are rejected.
 
 Before evaluation, the CLI opens and pins the report, policy, and integration
-manifest by file and parent-directory descriptor. It then resolves the requested
+manifest by file and parent-directory descriptor, and the validator pins the
+benchmark checkout by directory descriptor. It then resolves the requested
 output path, opens its directory without following the final path component,
 and verifies the opened directory by device and inode. It rejects paths inside
-the benchmark checkout and paths equal to a pinned input, including aliases
-reached through symlinked parents. Pinned descriptors are used for every input
-read and for creating and replacing the decision file, so concurrent parent
-symlink swaps cannot substitute an input or redirect the write. The resolved
-checkout stays internal and is not serialized.
+the held benchmark checkout and paths equal to a pinned input, including
+aliases reached through symlinked parents. Pinned descriptors are used for
+every input read and for creating and replacing the decision file, so
+concurrent path and parent-symlink swaps cannot substitute an input, mix
+checkout validation, or redirect the write into the checkout. The resolved
+checkout path stays internal and is not serialized.
 
 ## Failure Handling
 

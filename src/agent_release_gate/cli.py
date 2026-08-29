@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import secrets
-import stat
 import sys
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
@@ -17,6 +16,14 @@ from agent_release_gate.adapters.base import ReportError
 from agent_release_gate.adapters.registry import get_adapter
 from agent_release_gate.domain.policy import PolicyError, load_policy
 from agent_release_gate.evaluation.evaluator import evaluate
+from agent_release_gate.filesystem import (
+    close_best_effort,
+    directory_identity,
+    directory_is_within,
+    open_directory,
+    open_regular_file,
+    same_directory,
+)
 from agent_release_gate.integration.validator import (
     IntegrationError,
     IntegrationEvidence,
@@ -50,11 +57,7 @@ class _InputTarget:
         self.file_fd = -1
         self.directory_fd = -1
         for descriptor in (file_fd, directory_fd):
-            if descriptor >= 0:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
+            close_best_effort(descriptor)
 
     def __enter__(self) -> _InputTarget:
         return self
@@ -72,13 +75,9 @@ class _OutputTarget:
     def close(self) -> None:
         directory_fd = self.directory_fd
         self.directory_fd = -1
-        if directory_fd >= 0:
-            try:
-                os.close(directory_fd)
-            except OSError:
-                # This read-only guard descriptor cannot affect a committed
-                # output, and a close error must not mask the body result.
-                pass
+        # This read-only guard descriptor cannot affect a committed output,
+        # and a close error must not mask the body result.
+        close_best_effort(directory_fd)
 
     def __enter__(self) -> _OutputTarget:
         return self
@@ -127,38 +126,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _directory_flags() -> int:
-    required = ("O_DIRECTORY", "O_NOFOLLOW")
-    if any(not hasattr(os, name) for name in required):
-        raise DecisionWriteError("secure output writes are not supported on this platform")
-    return (
-        os.O_RDONLY
-        | os.O_DIRECTORY
-        | os.O_NOFOLLOW
-        | getattr(os, "O_CLOEXEC", 0)
-    )
-
-
-def _open_directory(path: Path) -> int:
-    return os.open(path, _directory_flags())
-
-
 def _prepare_input_target(path: Path) -> _InputTarget:
     directory_fd: int | None = None
     file_fd: int | None = None
     try:
-        resolved_path = path.resolve(strict=True)
-        directory_fd = _open_directory(resolved_path.parent)
-        file_fd = os.open(
-            resolved_path.name,
-            os.O_RDONLY
-            | os.O_NOFOLLOW
-            | os.O_NONBLOCK
-            | getattr(os, "O_CLOEXEC", 0),
-            dir_fd=directory_fd,
-        )
-        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
-            raise InputReadError(f"evaluation input is not a regular file: {path}")
+        file_fd, directory_fd, resolved_path = open_regular_file(path)
         target = _InputTarget(
             file_fd=file_fd,
             directory_fd=directory_fd,
@@ -175,34 +147,7 @@ def _prepare_input_target(path: Path) -> _InputTarget:
     finally:
         for descriptor in (file_fd, directory_fd):
             if descriptor is not None:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-
-
-def _same_directory(left_fd: int, right_fd: int) -> bool:
-    left = os.fstat(left_fd)
-    right = os.fstat(right_fd)
-    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
-
-
-def _directory_is_within(directory_fd: int, ancestor: Path) -> bool:
-    ancestor_fd = _open_directory(ancestor.resolve(strict=True))
-    current_fd = os.dup(directory_fd)
-    try:
-        while True:
-            if _same_directory(current_fd, ancestor_fd):
-                return True
-            parent_fd = os.open("..", _directory_flags(), dir_fd=current_fd)
-            if _same_directory(current_fd, parent_fd):
-                os.close(parent_fd)
-                return False
-            os.close(current_fd)
-            current_fd = parent_fd
-    finally:
-        os.close(current_fd)
-        os.close(ancestor_fd)
+                close_best_effort(descriptor)
 
 
 def _write_json_atomic(
@@ -283,8 +228,20 @@ def _prepare_output_target(
     output: Path,
     *,
     protected_files: Sequence[Path | _InputTarget],
-    protected_directory: Path,
+    protected_directory: Path | IntegrationEvidence,
 ) -> _OutputTarget:
+    if isinstance(protected_directory, IntegrationEvidence):
+        protected_path = protected_directory.checkout_path
+        protected_identity = protected_directory.checkout_identity
+    else:
+        protected_path = protected_directory
+        protected_fd: int | None = None
+        try:
+            protected_fd, _ = open_directory(protected_path)
+            protected_identity = directory_identity(protected_fd)
+        finally:
+            if protected_fd is not None:
+                close_best_effort(protected_fd)
     protected_paths = tuple(
         protected.display_path
         if isinstance(protected, _InputTarget)
@@ -294,7 +251,7 @@ def _prepare_output_target(
     _validate_output_path(
         output,
         protected_files=protected_paths,
-        protected_directory=protected_directory,
+        protected_directory=protected_path,
     )
     output_name = output.name
     if not output_name:
@@ -302,8 +259,8 @@ def _prepare_output_target(
 
     directory_fd: int | None = None
     try:
-        directory_fd = _open_directory(output.parent.resolve(strict=False))
-        if _directory_is_within(directory_fd, protected_directory):
+        directory_fd, _ = open_directory(output.parent)
+        if directory_is_within(directory_fd, protected_identity):
             raise DecisionWriteError(
                 "output path must not be inside the benchmark checkout"
             )
@@ -316,14 +273,14 @@ def _prepare_output_target(
             else:
                 resolved_protected = protected.resolve(strict=False)
                 protected_name = resolved_protected.name
-                protected_parent_fd = _open_directory(resolved_protected.parent)
+                protected_parent_fd, _ = open_directory(resolved_protected.parent)
                 close_protected_parent = True
             if output_name != protected_name:
                 if close_protected_parent:
                     os.close(protected_parent_fd)
                 continue
             try:
-                if _same_directory(directory_fd, protected_parent_fd):
+                if same_directory(directory_fd, protected_parent_fd):
                     raise DecisionWriteError(
                         "output path must not overwrite an evaluation input"
                     )
@@ -344,7 +301,7 @@ def _prepare_output_target(
         raise DecisionWriteError(f"unable to write decision {output}: {exc}") from exc
     finally:
         if directory_fd is not None:
-            os.close(directory_fd)
+            close_best_effort(directory_fd)
 
 
 def _validated_integration(
@@ -362,13 +319,15 @@ def _validated_integration(
 
 
 def _doctor(args: argparse.Namespace, stdout: TextIO) -> int:
-    integration = _validated_integration(args.integration)
-    document: dict[str, object] = {
-        "schema_version": 1,
-        "valid": True,
-        "integration": integration.to_dict(),
-    }
-    stdout.write(json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n")
+    with _validated_integration(args.integration) as integration:
+        document: dict[str, object] = {
+            "schema_version": 1,
+            "valid": True,
+            "integration": integration.to_dict(),
+        }
+        stdout.write(
+            json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        )
     return 0
 
 
@@ -383,15 +342,17 @@ def _evaluate(
         integration_input = resources.enter_context(
             _prepare_input_target(args.integration)
         )
-        integration = _validated_integration(
-            integration_input.read_path,
-            expected_adapter=args.adapter,
+        integration = resources.enter_context(
+            _validated_integration(
+                integration_input.read_path,
+                expected_adapter=args.adapter,
+            )
         )
         output_target = resources.enter_context(
             _prepare_output_target(
                 args.output,
                 protected_files=(report_input, policy_input, integration_input),
-                protected_directory=integration.checkout_path,
+                protected_directory=integration,
             )
         )
         evidence = adapter.load(

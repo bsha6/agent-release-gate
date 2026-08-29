@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from agent_release_gate.integration import validator as validator_module
 from agent_release_gate.integration.validator import (
     IntegrationError,
     IntegrationManifest,
@@ -38,6 +39,7 @@ class IntegrationValidatorTests(unittest.TestCase):
 
     def test_valid_checkout_returns_provenance(self) -> None:
         evidence = validate_integration(self.manifest())
+        self.addCleanup(evidence.close)
 
         self.assertEqual("clawprobench", evidence.adapter)
         self.assertEqual("SyntheticBench", evidence.name)
@@ -101,7 +103,8 @@ class IntegrationValidatorTests(unittest.TestCase):
         before = index_path.read_bytes()
         os.utime(self.checkout / "README.md", (1_577_836_800, 1_577_836_800))
 
-        validate_integration(self.manifest())
+        evidence = validate_integration(self.manifest())
+        evidence.close()
 
         self.assertEqual(before, index_path.read_bytes())
 
@@ -122,6 +125,7 @@ class IntegrationValidatorTests(unittest.TestCase):
             },
         ):
             evidence = validate_integration(self.manifest())
+        self.addCleanup(evidence.close)
 
         self.assertEqual(self.checkout.resolve(), evidence.checkout_path)
         self.assertEqual(self.commit, evidence.commit)
@@ -150,6 +154,30 @@ class IntegrationValidatorTests(unittest.TestCase):
         self.assertIn("unexpected origin URL", message)
         self.assertIn("worktree is not clean", message)
         self.assertIn("prohibited path is present: vendor", message)
+
+    def test_checkout_path_swap_cannot_mix_provenance_and_cleanliness(self) -> None:
+        (self.checkout / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+        alternate_parent = self.base / "alternate-repository"
+        alternate_parent.mkdir()
+        alternate_checkout, _ = create_git_repo(alternate_parent)
+        saved_checkout = self.base / "PinnedBenchmark"
+        original_git = validator_module._git
+        swapped = False
+
+        def swap_before_status(checkout_fd: int, *args: str):
+            nonlocal swapped
+            if args == ("status", "--porcelain") and not swapped:
+                swapped = True
+                self.checkout.rename(saved_checkout)
+                alternate_checkout.rename(self.checkout)
+            return original_git(checkout_fd, *args)
+
+        with patch(
+            "agent_release_gate.integration.validator._git",
+            side_effect=swap_before_status,
+        ):
+            with self.assertRaisesRegex(IntegrationError, "worktree is not clean"):
+                validate_integration(self.manifest())
 
     def test_manifest_rejects_unknown_or_missing_keys(self) -> None:
         path = write_manifest(
