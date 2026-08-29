@@ -139,6 +139,9 @@ for the complete build, test, CI, upstream, and audit inventory.
 - The CLI does not fetch or execute benchmark code.
 - Decision output must be separate from reports, policies, manifests, and
   benchmark checkouts; protected paths are rejected after symlink resolution.
+- The source distribution includes the default policy and integration manifest.
+  A standalone wheel contains only the CLI package, so invoke it from a source
+  checkout or pass explicit `--policy` and `--integration` paths.
 - v0 supports only the documented ClawProBench report shape and default
   integration. Unknown additive report fields are tolerated.
 - A deterministic `go` means only that the supplied evidence satisfies the
