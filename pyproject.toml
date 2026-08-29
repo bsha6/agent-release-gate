@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-release-gate"
+version = "0.1.0"
+description = "Turn agent benchmark evidence into deterministic release decisions."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = []
+
+[project.scripts]
+agent-release-gate = "agent_release_gate.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

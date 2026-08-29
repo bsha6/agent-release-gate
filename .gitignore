@@ -1,0 +1,16 @@
+# Local planning artifacts
+docs/superpowers/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+
+# Packaging output
+build/
+dist/
+*.egg-info/
+
+# Generated benchmark inputs and gate decisions
+results/
+decisions/

@@ -1,0 +1,7 @@
+[gate]
+name = "default"
+min_capability_score = 0.70
+min_strict_pass_rate = 0.70
+min_coverage_ratio = 1.0
+require_safety_passed = true
+max_execution_failures = 0

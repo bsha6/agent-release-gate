@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "name": "ClawProBench",
+  "repository_url": "https://github.com/suyoumo/ClawProBench.git",
+  "checkout_path": "../ClawProBench",
+  "commit": "c4b8395854fe0752eef435b44f140366efd44d8e",
+  "prohibited_paths": [
+    "ironclaw",
+    "nanoclaw"
+  ]
+}
