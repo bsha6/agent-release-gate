@@ -34,6 +34,8 @@ python3.14 -m venv /tmp/agent-release-gate
 ## Requirements
 
 - Python 3.14 or newer; development is verified with `python3.14`.
+- A POSIX-style operating system with descriptor-relative filesystem operations;
+  v0 is verified on macOS and Linux.
 - Git, used only for read-only provenance checks.
 - The audited ClawProBench checkout at `../ClawProBench`.
 
@@ -58,7 +60,9 @@ PYTHONPATH=src python3.14 -m agent_release_gate evaluate \
   --output decisions/release-decision.json
 ```
 
-The output is written atomically. A failed evaluation leaves an existing output file unchanged.
+The output is written atomically through a held directory descriptor. A failed
+evaluation leaves an existing output file unchanged, and a concurrent
+symlink-parent swap cannot redirect the write.
 
 Exit codes are:
 
@@ -112,6 +116,7 @@ Tests use synthetic JSON and disposable Git repositories. They do not execute th
 - `integrations/`: audited benchmark manifests.
 - `policies/`: release threshold policies.
 - `tests/`: synthetic fixtures and behavior tests.
+- `tools/`: release-artifact metadata normalization.
 - `docs/architecture.md`: system boundaries and data flow.
 - `docs/adding-an-adapter.md`: extension contract for another agent benchmark.
 
@@ -138,7 +143,8 @@ for the complete build, test, CI, upstream, and audit inventory.
 - Custom policies and integration manifests are trusted local configuration.
 - The CLI does not fetch or execute benchmark code.
 - Decision output must be separate from reports, policies, manifests, and
-  benchmark checkouts; protected paths are rejected after symlink resolution.
+  benchmark checkouts; protected paths are rejected after symlink resolution
+  and the output directory remains pinned by descriptor through the write.
 - The source distribution includes the default policy and integration manifest.
   A standalone wheel contains only the CLI package, so invoke it from a source
   checkout or pass explicit `--policy` and `--integration` paths.

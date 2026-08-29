@@ -40,7 +40,8 @@ For `evaluate`:
 
 1. Perform the same integration validation.
 2. Select the named benchmark adapter and require it to match the manifest.
-3. Resolve the output path and reject benchmark-checkout or input-file targets.
+3. Open and validate the output directory, rejecting benchmark-checkout or
+   input-file targets while holding the directory descriptor through the write.
 4. Validate and normalize the report into `BenchmarkEvidence`.
 5. Parse and validate the TOML policy, retaining its SHA-256 digest.
 6. Apply every gate rule in stable order.
@@ -73,6 +74,7 @@ The evaluation timestamp is the only time-varying output field. Tests inject a c
 The integration manifest pins the expected origin and full Git commit. Validation uses only:
 
 - `git rev-parse --is-inside-work-tree`;
+- `git rev-parse --show-toplevel`;
 - `git rev-parse HEAD`;
 - `git remote get-url origin`;
 - `git status --porcelain`.
@@ -84,10 +86,14 @@ This prevents a CLI invocation from presenting one benchmark's source
 provenance alongside a different adapter. Prohibited paths are detected even
 when represented by dangling symlinks.
 
-Before creating a temporary decision file, the CLI resolves the requested
-output path. It rejects paths inside the benchmark checkout and paths equal to
-the report, policy, or integration manifest, including aliases reached through
-symlinked parents. The resolved checkout stays internal and is not serialized.
+Before reading evaluation inputs, the CLI resolves the requested output path,
+opens its directory without following the final path component, and verifies
+the opened directory by device and inode. It rejects paths inside the benchmark
+checkout and paths equal to the report, policy, or integration manifest,
+including aliases reached through symlinked parents. The same directory
+descriptor is used to create and replace the decision file, so a concurrent
+symlink-parent swap cannot redirect the write. The resolved checkout stays
+internal and is not serialized.
 
 ## Failure Handling
 
