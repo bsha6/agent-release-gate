@@ -1,5 +1,6 @@
 # Local planning artifacts
 docs/superpowers/
+.worktrees/
 
 # Python caches and local environments
 __pycache__/

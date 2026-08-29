@@ -4,9 +4,38 @@ Agent Release Gate turns completed agent-benchmark evidence into a deterministic
 
 The tool reads existing JSON reports. It does not install, import, execute, fetch, or modify ClawProBench.
 
+## Status
+
+Version `0.1.0` is an early, source-distributed release. The public repository
+is intended for inspection and use, but outside pull requests and feature
+requests are not being solicited for v0.
+
+## Installation
+
+Agent Release Gate is not published to PyPI. Install it from a trusted source
+checkout:
+
+```bash
+python3.14 -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/agent-release-gate --help
+```
+
+To install a wheel produced from the checkout:
+
+```bash
+uv build
+python3.14 -m venv /tmp/agent-release-gate
+/tmp/agent-release-gate/bin/python -m pip install \
+  dist/agent_release_gate-0.1.0-py3-none-any.whl
+/tmp/agent-release-gate/bin/agent-release-gate --help
+```
+
 ## Requirements
 
 - Python 3.14 or newer; development is verified with `python3.14`.
+- A POSIX-style operating system with descriptor-relative filesystem operations;
+  v0 is verified on macOS and Linux.
 - Git, used only for read-only provenance checks.
 - The audited ClawProBench checkout at `../ClawProBench`.
 
@@ -18,7 +47,9 @@ No package installation is needed for repository development. Prefix commands wi
 PYTHONPATH=src python3.14 -m agent_release_gate doctor
 ```
 
-`doctor` validates the checkout, origin URL, audited commit, clean worktree, and absence of prohibited vendored directories. It never runs upstream code.
+`doctor` pins and validates the checkout, origin URL, audited commit, clean
+worktree, and absence of prohibited vendored directories. It never runs
+upstream code.
 
 ## Evaluate a Report
 
@@ -31,7 +62,12 @@ PYTHONPATH=src python3.14 -m agent_release_gate evaluate \
   --output decisions/release-decision.json
 ```
 
-The output is written atomically. A failed evaluation leaves an existing output file unchanged.
+Evaluation inputs and the validated benchmark checkout are pinned by file
+descriptor, and output is written atomically through a held directory
+descriptor. A failed evaluation leaves an existing output file unchanged;
+concurrent path or parent-symlink swaps cannot substitute an input, mix
+checkout provenance, redirect the write into the checkout, or overwrite a
+protected input through a case-variant or hard-link alias.
 
 Exit codes are:
 
@@ -85,6 +121,7 @@ Tests use synthetic JSON and disposable Git repositories. They do not execute th
 - `integrations/`: audited benchmark manifests.
 - `policies/`: release threshold policies.
 - `tests/`: synthetic fixtures and behavior tests.
+- `tools/`: release-artifact metadata normalization.
 - `docs/architecture.md`: system boundaries and data flow.
 - `docs/adding-an-adapter.md`: extension contract for another agent benchmark.
 
@@ -98,3 +135,38 @@ The v0 manifest pins:
 - prohibited checked-out paths: `ironclaw` and `nanoclaw`.
 
 Generated benchmark reports are inputs to this repository. ClawProBench remains a read-only upstream dependency.
+
+ClawProBench is licensed under Apache-2.0. Agent Release Gate does not vendor,
+modify, or redistribute its source. See [dependency boundaries](docs/dependencies.md)
+for the complete build, test, CI, upstream, and audit inventory.
+
+## Trust Model and Limitations
+
+- The CLI evaluates supplied reports; it does not prove that a report was
+  produced honestly or by the pinned benchmark source.
+- v0 preserves the report timestamp but does not enforce evidence freshness.
+- Custom policies and integration manifests are trusted local configuration.
+- The CLI does not fetch or execute benchmark code.
+- Filesystem identity and ancestry are checked at acquisition and immediately
+  before output commit. A hostile concurrent process with write access to both
+  directory trees is outside the v0 threat model; run evaluations where
+  untrusted processes cannot rename the output or benchmark directories.
+- Decision output must be separate from reports, policies, manifests, and
+  benchmark checkouts; protected paths are rejected after symlink resolution
+  while input files, the benchmark checkout, and the output directory remain
+  pinned by descriptor.
+- The source distribution includes the default policy and integration manifest.
+  A standalone wheel contains only the CLI package, so invoke it from a source
+  checkout or pass explicit `--policy` and `--integration` paths.
+- v0 supports only the documented ClawProBench report shape and default
+  integration. Unknown additive report fields are tolerated.
+- A deterministic `go` means only that the supplied evidence satisfies the
+  supplied policy. It is not a general security certification.
+
+Serialized decisions include the pinned repository URL and commit but omit the
+absolute local checkout path to avoid leaking machine-specific information.
+
+## Security and License
+
+Report vulnerabilities through the private process in [SECURITY.md](SECURITY.md).
+Agent Release Gate is licensed under the [Apache License 2.0](LICENSE).

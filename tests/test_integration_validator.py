@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from agent_release_gate.integration import validator as validator_module
 from agent_release_gate.integration.validator import (
     IntegrationError,
     IntegrationManifest,
@@ -38,7 +39,9 @@ class IntegrationValidatorTests(unittest.TestCase):
 
     def test_valid_checkout_returns_provenance(self) -> None:
         evidence = validate_integration(self.manifest())
+        self.addCleanup(evidence.close)
 
+        self.assertEqual("clawprobench", evidence.adapter)
         self.assertEqual("SyntheticBench", evidence.name)
         self.assertEqual(self.checkout.resolve(), evidence.checkout_path)
         self.assertEqual(TEST_ORIGIN, evidence.repository_url)
@@ -55,6 +58,32 @@ class IntegrationValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(IntegrationError, "not a Git worktree"):
             validate_integration(self.manifest(checkout=nongit))
 
+    def test_nested_directory_inside_ancestor_repo_is_not_a_checkout(self) -> None:
+        ancestor = self.base / "ancestor"
+        ancestor.mkdir()
+        run_git(ancestor, "init", "-b", "main")
+        run_git(ancestor, "config", "user.name", "Agent Release Gate Tests")
+        run_git(ancestor, "config", "user.email", "tests@example.com")
+        nested_project = ancestor / "project"
+        nested_checkout = ancestor / "nested"
+        nested_project.mkdir()
+        nested_checkout.mkdir()
+        (ancestor / ".gitignore").write_text("nested/\nproject/\n", encoding="utf-8")
+        (ancestor / "README.md").write_text("ancestor repository\n", encoding="utf-8")
+        run_git(ancestor, "add", ".gitignore", "README.md")
+        run_git(ancestor, "commit", "-m", "test: seed ancestor repository")
+        run_git(ancestor, "remote", "add", "origin", TEST_ORIGIN)
+        ancestor_commit = run_git(ancestor, "rev-parse", "HEAD")
+        manifest_path = write_manifest(
+            nested_project,
+            nested_checkout,
+            ancestor_commit,
+        )
+        manifest = load_manifest(manifest_path, project_root=nested_project)
+
+        with self.assertRaisesRegex(IntegrationError, "not a Git worktree root"):
+            validate_integration(manifest)
+
     def test_wrong_commit_and_origin_are_rejected(self) -> None:
         wrong_commit = "0" * 40
         with self.assertRaisesRegex(IntegrationError, f"expected commit {wrong_commit}"):
@@ -69,12 +98,49 @@ class IntegrationValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(IntegrationError, "worktree is not clean"):
             validate_integration(self.manifest())
 
+    def test_repository_config_cannot_hide_untracked_files(self) -> None:
+        run_git(self.checkout, "config", "status.showUntrackedFiles", "no")
+        (self.checkout / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(IntegrationError, "worktree is not clean"):
+            validate_integration(self.manifest())
+
+    def test_repository_excludes_file_cannot_hide_untracked_files(self) -> None:
+        excludes = self.base / "local-excludes"
+        excludes.write_text("hidden.txt\n", encoding="utf-8")
+        run_git(self.checkout, "config", "core.excludesFile", str(excludes))
+        (self.checkout / "hidden.txt").write_text("dirty\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(IntegrationError, "worktree is not clean"):
+            validate_integration(self.manifest())
+
+    def test_assume_unchanged_cannot_hide_tracked_modification(self) -> None:
+        run_git(self.checkout, "update-index", "--assume-unchanged", "README.md")
+        (self.checkout / "README.md").write_text("modified\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            IntegrationError,
+            "assume-unchanged",
+        ):
+            validate_integration(self.manifest())
+
+    def test_present_skip_worktree_file_cannot_hide_modification(self) -> None:
+        run_git(self.checkout, "update-index", "--skip-worktree", "README.md")
+        (self.checkout / "README.md").write_text("modified\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            IntegrationError,
+            "skip-worktree",
+        ):
+            validate_integration(self.manifest())
+
     def test_validation_does_not_refresh_or_rewrite_git_index(self) -> None:
         index_path = self.checkout / ".git" / "index"
         before = index_path.read_bytes()
         os.utime(self.checkout / "README.md", (1_577_836_800, 1_577_836_800))
 
-        validate_integration(self.manifest())
+        evidence = validate_integration(self.manifest())
+        evidence.close()
 
         self.assertEqual(before, index_path.read_bytes())
 
@@ -95,12 +161,19 @@ class IntegrationValidatorTests(unittest.TestCase):
             },
         ):
             evidence = validate_integration(self.manifest())
+        self.addCleanup(evidence.close)
 
         self.assertEqual(self.checkout.resolve(), evidence.checkout_path)
         self.assertEqual(self.commit, evidence.commit)
 
     def test_prohibited_directory_is_rejected(self) -> None:
         (self.checkout / "vendor").mkdir()
+
+        with self.assertRaisesRegex(IntegrationError, "prohibited path is present: vendor"):
+            validate_integration(self.manifest())
+
+    def test_prohibited_dangling_symlink_is_rejected(self) -> None:
+        (self.checkout / "vendor").symlink_to(self.base / "missing-target")
 
         with self.assertRaisesRegex(IntegrationError, "prohibited path is present: vendor"):
             validate_integration(self.manifest())
@@ -118,6 +191,34 @@ class IntegrationValidatorTests(unittest.TestCase):
         self.assertIn("worktree is not clean", message)
         self.assertIn("prohibited path is present: vendor", message)
 
+    def test_checkout_path_swap_cannot_mix_provenance_and_cleanliness(self) -> None:
+        (self.checkout / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+        alternate_parent = self.base / "alternate-repository"
+        alternate_parent.mkdir()
+        alternate_checkout, _ = create_git_repo(alternate_parent)
+        saved_checkout = self.base / "PinnedBenchmark"
+        original_git = validator_module._git
+        swapped = False
+
+        def swap_before_status(checkout_fd: int, *args: str):
+            nonlocal swapped
+            if args == (
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+            ) and not swapped:
+                swapped = True
+                self.checkout.rename(saved_checkout)
+                alternate_checkout.rename(self.checkout)
+            return original_git(checkout_fd, *args)
+
+        with patch(
+            "agent_release_gate.integration.validator._git",
+            side_effect=swap_before_status,
+        ):
+            with self.assertRaisesRegex(IntegrationError, "worktree is not clean"):
+                validate_integration(self.manifest())
+
     def test_manifest_rejects_unknown_or_missing_keys(self) -> None:
         path = write_manifest(
             self.project_root,
@@ -134,6 +235,13 @@ class IntegrationValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(IntegrationError, "missing keys: name"):
             load_manifest(path, project_root=self.project_root)
 
+        path = write_manifest(self.project_root, self.checkout, self.commit)
+        data = json.loads(path.read_text())
+        del data["adapter"]
+        path.write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaisesRegex(IntegrationError, "missing keys: adapter"):
+            load_manifest(path, project_root=self.project_root)
+
     def test_manifest_rejects_unsafe_paths_and_commit(self) -> None:
         with self.assertRaisesRegex(IntegrationError, "schema_version must be integer 1"):
             self.manifest(updates={"schema_version": 1.0})
@@ -141,10 +249,47 @@ class IntegrationValidatorTests(unittest.TestCase):
             self.manifest(updates={"checkout_path": str(self.checkout.resolve())})
         with self.assertRaisesRegex(IntegrationError, "checkout_path must resolve to a direct sibling"):
             self.manifest(updates={"checkout_path": "../../escape"})
+        for self_reference in (".", "../agent-release-gate"):
+            with self.subTest(checkout_path=self_reference):
+                with self.assertRaisesRegex(
+                    IntegrationError,
+                    "checkout_path must resolve to a direct sibling",
+                ):
+                    self.manifest(updates={"checkout_path": self_reference})
+        project_alias = self.base / "project-alias"
+        project_alias.symlink_to(self.project_root, target_is_directory=True)
+        with self.assertRaisesRegex(
+            IntegrationError,
+            "checkout_path must resolve to a direct sibling",
+        ):
+            self.manifest(updates={"checkout_path": "../project-alias"})
         with self.assertRaisesRegex(IntegrationError, "commit must be 40 lowercase hexadecimal"):
             self.manifest(updates={"commit": "ABC"})
         with self.assertRaisesRegex(IntegrationError, "prohibited_paths entries must be safe relative paths"):
             self.manifest(prohibited_paths=["../escape"])
+
+    def test_case_variant_of_project_is_not_checkout(self) -> None:
+        checkout_alias = self.project_root.parent / self.project_root.name.upper()
+        if not checkout_alias.is_dir():
+            self.skipTest("requires a case-insensitive filesystem")
+        manifest = self.manifest(
+            updates={"checkout_path": f"../{self.project_root.name.upper()}"}
+        )
+
+        with self.assertRaisesRegex(
+            IntegrationError,
+            "distinct direct sibling",
+        ):
+            validate_integration(manifest)
+
+    def test_manifest_rejects_unsafe_adapter_names(self) -> None:
+        for adapter in ("ClawProBench", "claw pro bench", "-clawprobench"):
+            with self.subTest(adapter=adapter):
+                with self.assertRaisesRegex(
+                    IntegrationError,
+                    "adapter must be a lowercase identifier",
+                ):
+                    self.manifest(updates={"adapter": adapter})
 
 
 if __name__ == "__main__":

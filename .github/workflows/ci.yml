@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      # actions/checkout v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # actions/setup-python v7.0.0
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.14"
+
+      - name: Run tests
+        run: PYTHONPATH=src python -m unittest discover -s tests -v
+
+      - name: Build source and wheel distributions
+        run: |
+          python -m pip install build==1.6.0
+          python -m build
+          python tools/normalize_sdist.py dist/*.tar.gz
+
+      - name: Install and inspect wheel
+        run: |
+          python -m venv "${RUNNER_TEMP}/agent-release-gate-smoke"
+          "${RUNNER_TEMP}/agent-release-gate-smoke/bin/python" -m pip install --no-deps dist/*.whl
+          "${RUNNER_TEMP}/agent-release-gate-smoke/bin/python" -c \
+            'from importlib.metadata import metadata, requires; m = metadata("agent-release-gate"); assert m["Version"] == "0.1.0"; assert m["License-Expression"] == "Apache-2.0"; assert not (requires("agent-release-gate") or [])'
+          "${RUNNER_TEMP}/agent-release-gate-smoke/bin/agent-release-gate" --help
+          "${RUNNER_TEMP}/agent-release-gate-smoke/bin/python" tests/package_smoke.py \
+            --cli "${RUNNER_TEMP}/agent-release-gate-smoke/bin/agent-release-gate"

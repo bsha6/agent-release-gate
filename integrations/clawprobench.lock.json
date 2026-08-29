@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "adapter": "clawprobench",
   "name": "ClawProBench",
   "repository_url": "https://github.com/suyoumo/ClawProBench.git",
   "checkout_path": "../ClawProBench",
