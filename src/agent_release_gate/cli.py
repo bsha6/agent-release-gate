@@ -98,8 +98,17 @@ def _write_json_atomic(path: Path, document: dict[str, object]) -> None:
                 pass
 
 
-def _validated_integration(path: Path):
+def _validated_integration(
+    path: Path,
+    *,
+    expected_adapter: str | None = None,
+):
     manifest = load_manifest(path, project_root=Path.cwd())
+    if expected_adapter is not None and manifest.adapter != expected_adapter:
+        raise IntegrationError(
+            f"requested adapter {expected_adapter!r} does not match "
+            f"integration adapter {manifest.adapter!r}"
+        )
     return validate_integration(manifest)
 
 
@@ -118,8 +127,11 @@ def _evaluate(
     args: argparse.Namespace,
     clock: Callable[[], datetime],
 ) -> int:
-    integration = _validated_integration(args.integration)
     adapter = get_adapter(args.adapter)
+    integration = _validated_integration(
+        args.integration,
+        expected_adapter=args.adapter,
+    )
     evidence = adapter.load(args.report, source_version=integration.commit)
     policy, policy_sha256 = load_policy(args.policy)
     decision = evaluate(evidence, policy)

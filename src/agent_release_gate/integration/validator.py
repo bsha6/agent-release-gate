@@ -15,6 +15,7 @@ class IntegrationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class IntegrationManifest:
+    adapter: str
     name: str
     repository_url: str
     checkout_path: Path
@@ -24,6 +25,7 @@ class IntegrationManifest:
 
 @dataclass(frozen=True, slots=True)
 class IntegrationEvidence:
+    adapter: str
     name: str
     checkout_path: Path
     repository_url: str
@@ -31,6 +33,7 @@ class IntegrationEvidence:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "adapter": self.adapter,
             "name": self.name,
             "checkout_path": str(self.checkout_path),
             "repository_url": self.repository_url,
@@ -40,6 +43,7 @@ class IntegrationEvidence:
 
 _MANIFEST_KEYS = {
     "schema_version",
+    "adapter",
     "name",
     "repository_url",
     "checkout_path",
@@ -47,6 +51,7 @@ _MANIFEST_KEYS = {
     "prohibited_paths",
 }
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_ADAPTER_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
 def _nonempty_string(raw: dict[str, Any], key: str) -> str:
@@ -74,6 +79,10 @@ def load_manifest(path: Path, *, project_root: Path) -> IntegrationManifest:
     schema_version = raw["schema_version"]
     if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != 1:
         raise IntegrationError("schema_version must be integer 1")
+
+    adapter = _nonempty_string(raw, "adapter")
+    if not _ADAPTER_RE.fullmatch(adapter):
+        raise IntegrationError("adapter must be a lowercase identifier")
 
     name = _nonempty_string(raw, "name")
     repository_url = _nonempty_string(raw, "repository_url")
@@ -104,6 +113,7 @@ def load_manifest(path: Path, *, project_root: Path) -> IntegrationManifest:
         prohibited_paths.append(normalized.as_posix())
 
     return IntegrationManifest(
+        adapter=adapter,
         name=name,
         repository_url=repository_url,
         checkout_path=checkout_path,
@@ -185,6 +195,7 @@ def validate_integration(manifest: IntegrationManifest) -> IntegrationEvidence:
         raise IntegrationError("integration validation failed: " + "; ".join(failures))
 
     return IntegrationEvidence(
+        adapter=manifest.adapter,
         name=manifest.name,
         checkout_path=checkout,
         repository_url=manifest.repository_url,

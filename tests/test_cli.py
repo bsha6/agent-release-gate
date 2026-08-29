@@ -25,8 +25,8 @@ class CliTests(unittest.TestCase):
         self.base = Path(directory.name)
         self.project_root = self.base / "agent-release-gate"
         self.project_root.mkdir()
-        self.checkout, commit = create_git_repo(self.base)
-        self.manifest = write_manifest(self.project_root, self.checkout, commit)
+        self.checkout, self.commit = create_git_repo(self.base)
+        self.manifest = write_manifest(self.project_root, self.checkout, self.commit)
 
     def invoke(self, args: list[str]) -> tuple[int, str, str]:
         stdout = io.StringIO()
@@ -59,6 +59,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(0, code)
         self.assertEqual("", stderr)
         self.assertTrue(document["valid"])
+        self.assertEqual("clawprobench", document["integration"]["adapter"])
         self.assertEqual("SyntheticBench", document["integration"]["name"])
 
     def test_doctor_reports_invalid_integration_and_returns_two(self) -> None:
@@ -140,6 +141,23 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(2, code)
         self.assertIn("unknown adapter", stderr)
+        self.assertFalse(output.exists())
+
+    def test_adapter_mismatch_returns_two_without_output(self) -> None:
+        manifest = write_manifest(
+            self.project_root,
+            self.checkout,
+            self.commit,
+            adapter="otherbench",
+        )
+        output = self.project_root / "decision.json"
+        args = self.evaluate_args(FIXTURES / "clawprobench_go.json", output)
+        args[args.index("--integration") + 1] = str(manifest)
+
+        code, _, stderr = self.invoke(args)
+
+        self.assertEqual(2, code)
+        self.assertIn("does not match integration adapter", stderr)
         self.assertFalse(output.exists())
 
     def test_output_parent_failure_returns_two(self) -> None:

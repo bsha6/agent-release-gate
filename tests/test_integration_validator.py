@@ -39,6 +39,7 @@ class IntegrationValidatorTests(unittest.TestCase):
     def test_valid_checkout_returns_provenance(self) -> None:
         evidence = validate_integration(self.manifest())
 
+        self.assertEqual("clawprobench", evidence.adapter)
         self.assertEqual("SyntheticBench", evidence.name)
         self.assertEqual(self.checkout.resolve(), evidence.checkout_path)
         self.assertEqual(TEST_ORIGIN, evidence.repository_url)
@@ -134,6 +135,13 @@ class IntegrationValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(IntegrationError, "missing keys: name"):
             load_manifest(path, project_root=self.project_root)
 
+        path = write_manifest(self.project_root, self.checkout, self.commit)
+        data = json.loads(path.read_text())
+        del data["adapter"]
+        path.write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaisesRegex(IntegrationError, "missing keys: adapter"):
+            load_manifest(path, project_root=self.project_root)
+
     def test_manifest_rejects_unsafe_paths_and_commit(self) -> None:
         with self.assertRaisesRegex(IntegrationError, "schema_version must be integer 1"):
             self.manifest(updates={"schema_version": 1.0})
@@ -145,6 +153,15 @@ class IntegrationValidatorTests(unittest.TestCase):
             self.manifest(updates={"commit": "ABC"})
         with self.assertRaisesRegex(IntegrationError, "prohibited_paths entries must be safe relative paths"):
             self.manifest(prohibited_paths=["../escape"])
+
+    def test_manifest_rejects_unsafe_adapter_names(self) -> None:
+        for adapter in ("ClawProBench", "claw pro bench", "-clawprobench"):
+            with self.subTest(adapter=adapter):
+                with self.assertRaisesRegex(
+                    IntegrationError,
+                    "adapter must be a lowercase identifier",
+                ):
+                    self.manifest(updates={"adapter": adapter})
 
 
 if __name__ == "__main__":

@@ -42,12 +42,14 @@ def write_manifest(
     checkout: Path,
     commit: str,
     *,
+    adapter: str = "clawprobench",
     repository_url: str = TEST_ORIGIN,
     prohibited_paths: list[str] | None = None,
     updates: dict[str, object] | None = None,
 ) -> Path:
     data: dict[str, object] = {
         "schema_version": 1,
+        "adapter": adapter,
         "name": "SyntheticBench",
         "repository_url": repository_url,
         "checkout_path": os.path.relpath(checkout, project_root),
