@@ -98,6 +98,27 @@ def _write_json_atomic(path: Path, document: dict[str, object]) -> None:
                 pass
 
 
+def _validate_output_path(
+    output: Path,
+    *,
+    protected_files: Sequence[Path],
+    protected_directory: Path,
+) -> None:
+    resolved_output = output.resolve(strict=False)
+    resolved_directory = protected_directory.resolve(strict=False)
+    if resolved_output.is_relative_to(resolved_directory):
+        raise DecisionWriteError(
+            "output path must not be inside the benchmark checkout"
+        )
+    if any(
+        resolved_output == protected.resolve(strict=False)
+        for protected in protected_files
+    ):
+        raise DecisionWriteError(
+            "output path must not overwrite an evaluation input"
+        )
+
+
 def _validated_integration(
     path: Path,
     *,
@@ -131,6 +152,11 @@ def _evaluate(
     integration = _validated_integration(
         args.integration,
         expected_adapter=args.adapter,
+    )
+    _validate_output_path(
+        args.output,
+        protected_files=(args.report, args.policy, args.integration),
+        protected_directory=integration.checkout_path,
     )
     evidence = adapter.load(args.report, source_version=integration.commit)
     policy, policy_sha256 = load_policy(args.policy)

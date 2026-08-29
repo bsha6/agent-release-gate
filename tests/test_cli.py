@@ -171,6 +171,68 @@ class CliTests(unittest.TestCase):
         self.assertIn("unable to write decision", stderr)
         self.assertFalse(output.exists())
 
+    def test_output_cannot_overwrite_report(self) -> None:
+        report = self.project_root / "report.json"
+        original = (FIXTURES / "clawprobench_go.json").read_bytes()
+        report.write_bytes(original)
+
+        code, _, stderr = self.invoke(self.evaluate_args(report, report))
+
+        self.assertEqual(2, code)
+        self.assertIn("must not overwrite an evaluation input", stderr)
+        self.assertEqual(original, report.read_bytes())
+
+    def test_output_cannot_overwrite_policy(self) -> None:
+        policy = self.project_root / "policy.toml"
+        original = POLICY.read_bytes()
+        policy.write_bytes(original)
+        args = self.evaluate_args(FIXTURES / "clawprobench_go.json", policy)
+        args[args.index("--policy") + 1] = str(policy)
+
+        code, _, stderr = self.invoke(args)
+
+        self.assertEqual(2, code)
+        self.assertIn("must not overwrite an evaluation input", stderr)
+        self.assertEqual(original, policy.read_bytes())
+
+    def test_output_cannot_overwrite_integration_manifest(self) -> None:
+        original = self.manifest.read_bytes()
+
+        code, _, stderr = self.invoke(
+            self.evaluate_args(
+                FIXTURES / "clawprobench_go.json",
+                self.manifest,
+            )
+        )
+
+        self.assertEqual(2, code)
+        self.assertIn("must not overwrite an evaluation input", stderr)
+        self.assertEqual(original, self.manifest.read_bytes())
+
+    def test_output_inside_benchmark_checkout_is_rejected_without_write(self) -> None:
+        output = self.checkout / "decision.json"
+
+        code, _, stderr = self.invoke(
+            self.evaluate_args(FIXTURES / "clawprobench_go.json", output)
+        )
+
+        self.assertEqual(2, code)
+        self.assertIn("must not be inside the benchmark checkout", stderr)
+        self.assertFalse(output.exists())
+
+    def test_output_symlinked_into_benchmark_checkout_is_rejected(self) -> None:
+        linked_checkout = self.project_root / "linked-checkout"
+        linked_checkout.symlink_to(self.checkout, target_is_directory=True)
+        output = linked_checkout / "decision.json"
+
+        code, _, stderr = self.invoke(
+            self.evaluate_args(FIXTURES / "clawprobench_go.json", output)
+        )
+
+        self.assertEqual(2, code)
+        self.assertIn("must not be inside the benchmark checkout", stderr)
+        self.assertFalse((self.checkout / "decision.json").exists())
+
     def test_help_is_available_without_loading_inputs(self) -> None:
         code, stdout, stderr = self.invoke(["--help"])
 

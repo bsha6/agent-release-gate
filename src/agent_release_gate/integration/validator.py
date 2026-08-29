@@ -188,7 +188,8 @@ def validate_integration(manifest: IntegrationManifest) -> IntegrationEvidence:
         failures.append("worktree is not clean")
 
     for prohibited_path in manifest.prohibited_paths:
-        if (checkout / prohibited_path).exists():
+        candidate = checkout / prohibited_path
+        if candidate.exists() or candidate.is_symlink():
             failures.append(f"prohibited path is present: {prohibited_path}")
 
     if failures:

@@ -106,6 +106,12 @@ class IntegrationValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(IntegrationError, "prohibited path is present: vendor"):
             validate_integration(self.manifest())
 
+    def test_prohibited_dangling_symlink_is_rejected(self) -> None:
+        (self.checkout / "vendor").symlink_to(self.base / "missing-target")
+
+        with self.assertRaisesRegex(IntegrationError, "prohibited path is present: vendor"):
+            validate_integration(self.manifest())
+
     def test_validation_aggregates_independent_mismatches(self) -> None:
         (self.checkout / "vendor").mkdir()
         (self.checkout / "dirty.txt").write_text("dirty\n", encoding="utf-8")
