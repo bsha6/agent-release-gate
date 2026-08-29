@@ -31,19 +31,21 @@ This direction lets another agent benchmark reuse the same policies, evaluator, 
 For `doctor`:
 
 1. Load and strictly validate the integration manifest.
-2. Resolve its checkout as a direct sibling of this repository.
-3. verify Git worktree state, `HEAD`, `origin`, cleanliness, and prohibited paths.
-4. Emit validated provenance as JSON.
+2. Bind the manifest's declared adapter to the registry key used for evaluation.
+3. Resolve its checkout as a direct sibling of this repository.
+4. Verify Git worktree state, `HEAD`, `origin`, cleanliness, and prohibited paths.
+5. Emit validated provenance as JSON without the absolute local checkout path.
 
 For `evaluate`:
 
 1. Perform the same integration validation.
-2. Select the named benchmark adapter.
-3. Validate and normalize the report into `BenchmarkEvidence`.
-4. Parse and validate the TOML policy, retaining its SHA-256 digest.
-5. Apply every gate rule in stable order.
-6. Combine decision, observed metrics, report identity, integration provenance, policy identity, and UTC evaluation time.
-7. Write sorted, indented JSON to a sibling temporary file, sync it, and replace the target atomically.
+2. Select the named benchmark adapter and require it to match the manifest.
+3. Resolve the output path and reject benchmark-checkout or input-file targets.
+4. Validate and normalize the report into `BenchmarkEvidence`.
+5. Parse and validate the TOML policy, retaining its SHA-256 digest.
+6. Apply every gate rule in stable order.
+7. Combine decision, observed metrics, report identity, integration provenance, policy identity, and UTC evaluation time.
+8. Write sorted, indented JSON to a sibling temporary file, sync it, and replace the target atomically.
 
 Input errors are distinct from release outcomes. A valid `no_go` is exit code `1`; malformed evidence or unproven provenance is exit code `2` and produces no decision.
 
@@ -76,6 +78,16 @@ The integration manifest pins the expected origin and full Git commit. Validatio
 - `git status --porcelain`.
 
 Git hooks and fsmonitor are disabled for these read-only subprocesses, terminal prompts are disabled, and `GIT_OPTIONAL_LOCKS=0` prevents status checks from refreshing the upstream index. The validator also disables Git's untracked cache, ignores global/system Git configuration, and removes inherited `GIT_*` variables before setting its explicit safe environment. This prevents ambient `GIT_DIR`, `GIT_WORK_TREE`, or index overrides from redirecting a probe away from the pinned checkout. Validation never fetches, checks out, resets, cleans, or writes upstream files.
+
+The integration manifest declares the adapter that may consume its evidence.
+This prevents a CLI invocation from presenting one benchmark's source
+provenance alongside a different adapter. Prohibited paths are detected even
+when represented by dangling symlinks.
+
+Before creating a temporary decision file, the CLI resolves the requested
+output path. It rejects paths inside the benchmark checkout and paths equal to
+the report, policy, or integration manifest, including aliases reached through
+symlinked parents. The resolved checkout stays internal and is not serialized.
 
 ## Failure Handling
 

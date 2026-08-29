@@ -48,6 +48,11 @@ _ADAPTERS = MappingProxyType(
 
 Add a strict manifest under `integrations/` for the benchmark source. The manifest identifies the source repository, audited version, expected local checkout, and prohibited paths. Adapter code receives the validated source version; it does not perform Git operations itself.
 
+The manifest's `adapter` field must exactly match the lowercase registry key.
+Evaluation rejects a different `--adapter` value before reading a report or
+writing a decision. Keep the checkout as a direct sibling, and never use a
+decision output path inside that checkout.
+
 ## Tests
 
 Start with synthetic, hand-checked reports. Tests must cover:
