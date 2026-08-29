@@ -3,10 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import sys
-import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn, TextIO
@@ -17,6 +18,7 @@ from agent_release_gate.domain.policy import PolicyError, load_policy
 from agent_release_gate.evaluation.evaluator import evaluate
 from agent_release_gate.integration.validator import (
     IntegrationError,
+    IntegrationEvidence,
     load_manifest,
     validate_integration,
 )
@@ -24,6 +26,30 @@ from agent_release_gate.integration.validator import (
 
 class DecisionWriteError(ValueError):
     """Raised when a completed decision cannot be written atomically."""
+
+
+@dataclass(slots=True)
+class _OutputTarget:
+    directory_fd: int
+    name: str
+    display_path: Path
+
+    def close(self) -> None:
+        directory_fd = self.directory_fd
+        self.directory_fd = -1
+        if directory_fd >= 0:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                # This read-only guard descriptor cannot affect a committed
+                # output, and a close error must not mask the body result.
+                pass
+
+    def __enter__(self) -> _OutputTarget:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,8 +92,51 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _write_json_atomic(path: Path, document: dict[str, object]) -> None:
-    temporary_path: Path | None = None
+def _directory_flags() -> int:
+    required = ("O_DIRECTORY", "O_NOFOLLOW")
+    if any(not hasattr(os, name) for name in required):
+        raise DecisionWriteError("secure output writes are not supported on this platform")
+    return (
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _open_directory(path: Path) -> int:
+    return os.open(path, _directory_flags())
+
+
+def _same_directory(left_fd: int, right_fd: int) -> bool:
+    left = os.fstat(left_fd)
+    right = os.fstat(right_fd)
+    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _directory_is_within(directory_fd: int, ancestor: Path) -> bool:
+    ancestor_fd = _open_directory(ancestor.resolve(strict=True))
+    current_fd = os.dup(directory_fd)
+    try:
+        while True:
+            if _same_directory(current_fd, ancestor_fd):
+                return True
+            parent_fd = os.open("..", _directory_flags(), dir_fd=current_fd)
+            if _same_directory(current_fd, parent_fd):
+                os.close(parent_fd)
+                return False
+            os.close(current_fd)
+            current_fd = parent_fd
+    finally:
+        os.close(current_fd)
+        os.close(ancestor_fd)
+
+
+def _write_json_atomic(
+    target: _OutputTarget,
+    document: dict[str, object],
+) -> None:
+    temporary_name: str | None = None
     try:
         serialized = json.dumps(
             document,
@@ -75,25 +144,42 @@ def _write_json_atomic(path: Path, document: dict[str, object]) -> None:
             sort_keys=True,
             allow_nan=False,
         ) + "\n"
-        with tempfile.NamedTemporaryFile(
+        temporary_name = f".{target.name}.{secrets.token_hex(16)}"
+        temporary_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=target.directory_fd,
+        )
+        with os.fdopen(
+            temporary_fd,
             mode="w",
             encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            delete=False,
         ) as temporary:
-            temporary_path = Path(temporary.name)
             temporary.write(serialized)
             temporary.flush()
             os.fsync(temporary.fileno())
-        os.replace(temporary_path, path)
-        temporary_path = None
+        os.replace(
+            temporary_name,
+            target.name,
+            src_dir_fd=target.directory_fd,
+            dst_dir_fd=target.directory_fd,
+        )
+        temporary_name = None
+        try:
+            os.fsync(target.directory_fd)
+        except OSError:
+            # The rename has already committed the new file. Reporting failure
+            # here would falsely promise that an existing output was preserved.
+            pass
     except (OSError, TypeError, ValueError) as exc:
-        raise DecisionWriteError(f"unable to write decision {path}: {exc}") from exc
+        raise DecisionWriteError(
+            f"unable to write decision {target.display_path}: {exc}"
+        ) from exc
     finally:
-        if temporary_path is not None:
+        if temporary_name is not None:
             try:
-                temporary_path.unlink(missing_ok=True)
+                os.unlink(temporary_name, dir_fd=target.directory_fd)
             except OSError:
                 pass
 
@@ -103,7 +189,7 @@ def _validate_output_path(
     *,
     protected_files: Sequence[Path],
     protected_directory: Path,
-) -> None:
+) -> Path:
     resolved_output = output.resolve(strict=False)
     resolved_directory = protected_directory.resolve(strict=False)
     if resolved_output.is_relative_to(resolved_directory):
@@ -117,13 +203,66 @@ def _validate_output_path(
         raise DecisionWriteError(
             "output path must not overwrite an evaluation input"
         )
+    return resolved_output
+
+
+def _prepare_output_target(
+    output: Path,
+    *,
+    protected_files: Sequence[Path],
+    protected_directory: Path,
+) -> _OutputTarget:
+    resolved_output = _validate_output_path(
+        output,
+        protected_files=protected_files,
+        protected_directory=protected_directory,
+    )
+    output_name = output.name
+    if not output_name:
+        raise DecisionWriteError("output path must name a file")
+
+    directory_fd: int | None = None
+    try:
+        directory_fd = _open_directory(output.parent.resolve(strict=False))
+        if _directory_is_within(directory_fd, protected_directory):
+            raise DecisionWriteError(
+                "output path must not be inside the benchmark checkout"
+            )
+
+        for protected in protected_files:
+            resolved_protected = protected.resolve(strict=False)
+            if output_name != resolved_protected.name:
+                continue
+            protected_parent_fd = _open_directory(resolved_protected.parent)
+            try:
+                if _same_directory(directory_fd, protected_parent_fd):
+                    raise DecisionWriteError(
+                        "output path must not overwrite an evaluation input"
+                    )
+            finally:
+                os.close(protected_parent_fd)
+
+        target = _OutputTarget(
+            directory_fd=directory_fd,
+            name=output_name,
+            display_path=output,
+        )
+        directory_fd = None
+        return target
+    except DecisionWriteError:
+        raise
+    except OSError as exc:
+        raise DecisionWriteError(f"unable to write decision {output}: {exc}") from exc
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
 
 
 def _validated_integration(
     path: Path,
     *,
     expected_adapter: str | None = None,
-):
+) -> IntegrationEvidence:
     manifest = load_manifest(path, project_root=Path.cwd())
     if expected_adapter is not None and manifest.adapter != expected_adapter:
         raise IntegrationError(
@@ -153,23 +292,24 @@ def _evaluate(
         args.integration,
         expected_adapter=args.adapter,
     )
-    _validate_output_path(
+    output_target = _prepare_output_target(
         args.output,
         protected_files=(args.report, args.policy, args.integration),
         protected_directory=integration.checkout_path,
     )
-    evidence = adapter.load(args.report, source_version=integration.commit)
-    policy, policy_sha256 = load_policy(args.policy)
-    decision = evaluate(evidence, policy)
+    with output_target:
+        evidence = adapter.load(args.report, source_version=integration.commit)
+        policy, policy_sha256 = load_policy(args.policy)
+        decision = evaluate(evidence, policy)
 
-    document = decision.to_dict()
-    document["schema_version"] = 1
-    document["evaluated_at"] = clock().astimezone(timezone.utc).isoformat()
-    policy_document = dict(document["policy"])  # type: ignore[arg-type]
-    policy_document["sha256"] = policy_sha256
-    document["policy"] = policy_document
-    document["integration"] = integration.to_dict()
-    _write_json_atomic(args.output, document)
+        document = decision.to_dict()
+        document["schema_version"] = 1
+        document["evaluated_at"] = clock().astimezone(timezone.utc).isoformat()
+        policy_document = dict(document["policy"])  # type: ignore[arg-type]
+        policy_document["sha256"] = policy_sha256
+        document["policy"] = policy_document
+        document["integration"] = integration.to_dict()
+        _write_json_atomic(output_target, document)
     return 0 if decision.decision == "go" else 1
 
 

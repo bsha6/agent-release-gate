@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
@@ -8,8 +9,13 @@ import unittest
 from contextlib import chdir
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
-from agent_release_gate.cli import run
+from agent_release_gate.cli import (
+    _prepare_output_target,
+    _write_json_atomic,
+    run,
+)
 from tests.support import create_git_repo, write_manifest
 
 
@@ -234,6 +240,79 @@ class CliTests(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertIn("must not be inside the benchmark checkout", stderr)
         self.assertFalse((self.checkout / "decision.json").exists())
+
+    def test_output_parent_symlink_swap_cannot_redirect_atomic_write(self) -> None:
+        safe_directory = self.project_root / "safe"
+        safe_directory.mkdir()
+        linked_directory = self.project_root / "out"
+        linked_directory.symlink_to(safe_directory, target_is_directory=True)
+        output = linked_directory / "decision.json"
+
+        with _prepare_output_target(
+            output,
+            protected_files=(FIXTURES / "clawprobench_go.json", POLICY, self.manifest),
+            protected_directory=self.checkout,
+        ) as target:
+            linked_directory.unlink()
+            linked_directory.symlink_to(self.checkout, target_is_directory=True)
+            _write_json_atomic(target, {"decision": "go"})
+
+        self.assertEqual(
+            {"decision": "go"},
+            json.loads((safe_directory / "decision.json").read_text()),
+        )
+        self.assertFalse((self.checkout / "decision.json").exists())
+
+    def test_output_leaf_symlink_is_replaced_without_overwriting_its_target(self) -> None:
+        victim = self.project_root / "victim.txt"
+        victim.write_text("keep me\n", encoding="utf-8")
+        output = self.project_root / "decision.json"
+        output.symlink_to(victim)
+
+        with _prepare_output_target(
+            output,
+            protected_files=(FIXTURES / "clawprobench_go.json", POLICY, self.manifest),
+            protected_directory=self.checkout,
+        ) as target:
+            _write_json_atomic(target, {"decision": "go"})
+
+        self.assertEqual("keep me\n", victim.read_text())
+        self.assertFalse(output.is_symlink())
+        self.assertEqual({"decision": "go"}, json.loads(output.read_text()))
+
+    def test_directory_sync_failure_after_replace_does_not_report_failure(self) -> None:
+        output = self.project_root / "decision.json"
+
+        with _prepare_output_target(
+            output,
+            protected_files=(FIXTURES / "clawprobench_go.json", POLICY, self.manifest),
+            protected_directory=self.checkout,
+        ) as target:
+            with patch(
+                "agent_release_gate.cli.os.fsync",
+                side_effect=(None, OSError(errno.EIO, "simulated directory sync failure")),
+            ):
+                _write_json_atomic(target, {"decision": "go"})
+
+        self.assertEqual({"decision": "go"}, json.loads(output.read_text()))
+
+    def test_directory_close_failure_after_replace_does_not_report_failure(self) -> None:
+        output = self.project_root / "decision.json"
+        target = _prepare_output_target(
+            output,
+            protected_files=(FIXTURES / "clawprobench_go.json", POLICY, self.manifest),
+            protected_directory=self.checkout,
+        )
+        _write_json_atomic(target, {"decision": "go"})
+
+        with patch(
+            "agent_release_gate.cli.os.close",
+            side_effect=OSError(errno.EIO, "simulated close failure"),
+        ):
+            target.close()
+
+        self.assertEqual(-1, target.directory_fd)
+        self.assertEqual({"decision": "go"}, json.loads(output.read_text()))
 
     def test_help_is_available_without_loading_inputs(self) -> None:
         code, stdout, stderr = self.invoke(["--help"])

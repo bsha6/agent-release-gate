@@ -165,6 +165,15 @@ def validate_integration(manifest: IntegrationManifest) -> IntegrationEvidence:
     if worktree.returncode != 0 or worktree.stdout.strip() != "true":
         raise IntegrationError(f"checkout is not a Git worktree: {checkout}")
 
+    top_level = _git(checkout, "rev-parse", "--show-toplevel")
+    observed_top_level = (
+        Path(top_level.stdout.strip()).resolve()
+        if top_level.returncode == 0 and top_level.stdout.strip()
+        else None
+    )
+    if observed_top_level != checkout.resolve():
+        raise IntegrationError(f"checkout is not a Git worktree root: {checkout}")
+
     failures: list[str] = []
     head = _git(checkout, "rev-parse", "HEAD")
     observed_commit = head.stdout.strip() if head.returncode == 0 else "unavailable"

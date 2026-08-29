@@ -56,6 +56,32 @@ class IntegrationValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(IntegrationError, "not a Git worktree"):
             validate_integration(self.manifest(checkout=nongit))
 
+    def test_nested_directory_inside_ancestor_repo_is_not_a_checkout(self) -> None:
+        ancestor = self.base / "ancestor"
+        ancestor.mkdir()
+        run_git(ancestor, "init", "-b", "main")
+        run_git(ancestor, "config", "user.name", "Agent Release Gate Tests")
+        run_git(ancestor, "config", "user.email", "tests@example.com")
+        nested_project = ancestor / "project"
+        nested_checkout = ancestor / "nested"
+        nested_project.mkdir()
+        nested_checkout.mkdir()
+        (ancestor / ".gitignore").write_text("nested/\nproject/\n", encoding="utf-8")
+        (ancestor / "README.md").write_text("ancestor repository\n", encoding="utf-8")
+        run_git(ancestor, "add", ".gitignore", "README.md")
+        run_git(ancestor, "commit", "-m", "test: seed ancestor repository")
+        run_git(ancestor, "remote", "add", "origin", TEST_ORIGIN)
+        ancestor_commit = run_git(ancestor, "rev-parse", "HEAD")
+        manifest_path = write_manifest(
+            nested_project,
+            nested_checkout,
+            ancestor_commit,
+        )
+        manifest = load_manifest(manifest_path, project_root=nested_project)
+
+        with self.assertRaisesRegex(IntegrationError, "not a Git worktree root"):
+            validate_integration(manifest)
+
     def test_wrong_commit_and_origin_are_rejected(self) -> None:
         wrong_commit = "0" * 40
         with self.assertRaisesRegex(IntegrationError, f"expected commit {wrong_commit}"):
