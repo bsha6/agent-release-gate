@@ -250,7 +250,12 @@ def validate_integration(manifest: IntegrationManifest) -> IntegrationEvidence:
                 f"unexpected origin URL: expected {manifest.repository_url}, observed {observed_origin}"
             )
 
-        status = _git(checkout_fd, "status", "--porcelain")
+        status = _git(
+            checkout_fd,
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        )
         if status.returncode != 0:
             failures.append("unable to determine worktree status")
         elif status.stdout:

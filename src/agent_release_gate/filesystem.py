@@ -64,12 +64,16 @@ def _walk_absolute_directory(path: Path) -> int:
         close_best_effort(current_fd)
 
 
-def _open_resolved_directory(resolved: Path) -> int:
+def _open_resolved_directory(
+    resolved: Path,
+    expected_identity: DirectoryIdentity | None = None,
+) -> int:
     expected = os.stat(resolved, follow_symlinks=False)
     if not stat.S_ISDIR(expected.st_mode):
         raise NotADirectoryError(errno.ENOTDIR, "not a directory", str(resolved))
+    expected_identity = expected_identity or (expected.st_dev, expected.st_ino)
     descriptor = _walk_absolute_directory(resolved)
-    if directory_identity(descriptor) != (expected.st_dev, expected.st_ino):
+    if directory_identity(descriptor) != expected_identity:
         close_best_effort(descriptor)
         raise OSError(
             errno.ESTALE,
@@ -80,14 +84,22 @@ def _open_resolved_directory(resolved: Path) -> int:
 
 
 def open_directory(path: Path) -> tuple[int, Path]:
+    expected = os.stat(path)
+    if not stat.S_ISDIR(expected.st_mode):
+        raise NotADirectoryError(errno.ENOTDIR, "not a directory", str(path))
     resolved = path.resolve(strict=True)
-    descriptor = _open_resolved_directory(resolved)
+    descriptor = _open_resolved_directory(
+        resolved,
+        (expected.st_dev, expected.st_ino),
+    )
     return descriptor, resolved
 
 
 def open_regular_file(path: Path) -> tuple[int, int, Path]:
+    expected = os.stat(path)
+    if not stat.S_ISREG(expected.st_mode):
+        raise OSError(errno.EINVAL, "not a regular file", str(path))
     resolved = path.resolve(strict=True)
-    expected = os.stat(resolved, follow_symlinks=False)
     parent_fd = _open_resolved_directory(resolved.parent)
     file_fd: int | None = None
     try:

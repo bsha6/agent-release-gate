@@ -98,6 +98,13 @@ class IntegrationValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(IntegrationError, "worktree is not clean"):
             validate_integration(self.manifest())
 
+    def test_repository_config_cannot_hide_untracked_files(self) -> None:
+        run_git(self.checkout, "config", "status.showUntrackedFiles", "no")
+        (self.checkout / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(IntegrationError, "worktree is not clean"):
+            validate_integration(self.manifest())
+
     def test_validation_does_not_refresh_or_rewrite_git_index(self) -> None:
         index_path = self.checkout / ".git" / "index"
         before = index_path.read_bytes()
@@ -166,7 +173,11 @@ class IntegrationValidatorTests(unittest.TestCase):
 
         def swap_before_status(checkout_fd: int, *args: str):
             nonlocal swapped
-            if args == ("status", "--porcelain") and not swapped:
+            if args == (
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+            ) and not swapped:
                 swapped = True
                 self.checkout.rename(saved_checkout)
                 alternate_checkout.rename(self.checkout)

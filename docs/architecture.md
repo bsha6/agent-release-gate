@@ -79,7 +79,7 @@ The integration manifest pins the expected origin and full Git commit. Validatio
 - `git rev-parse --show-prefix`;
 - `git rev-parse HEAD`;
 - `git remote get-url origin`;
-- `git status --porcelain`.
+- `git status --porcelain --untracked-files=all`.
 
 Git hooks and fsmonitor are disabled for these read-only subprocesses, terminal prompts are disabled, and `GIT_OPTIONAL_LOCKS=0` prevents status checks from refreshing the upstream index. The validator also disables Git's untracked cache, ignores global/system Git configuration, and removes inherited `GIT_*` variables before setting its explicit safe environment. This prevents ambient `GIT_DIR`, `GIT_WORK_TREE`, or index overrides from redirecting a probe away from the pinned checkout. Validation never fetches, checks out, resets, cleans, or writes upstream files.
 
@@ -106,6 +106,7 @@ and verifies the opened directory by device and inode. It rejects paths inside
 the held benchmark checkout and destination leaves with the same device and
 inode as a pinned input, including case variants, hard links, and aliases
 reached through symlinked parents. It repeats the input-identity check
+and benchmark-ancestry check before creating the temporary file and again
 immediately before replacement. Pinned descriptors are used for every input
 read and for creating and replacing the decision file, so
 concurrent path and parent-symlink swaps cannot substitute an input, mix

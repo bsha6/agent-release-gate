@@ -74,6 +74,7 @@ class _OutputTarget:
     name: str
     display_path: Path
     protected_file_identities: tuple[FileIdentity, ...]
+    protected_directory_identity: tuple[int, int]
 
     def close(self) -> None:
         directory_fd = self.directory_fd
@@ -159,6 +160,7 @@ def _write_json_atomic(
 ) -> None:
     temporary_name: str | None = None
     try:
+        _validate_pinned_output_target(target)
         serialized = json.dumps(
             document,
             indent=2,
@@ -180,14 +182,7 @@ def _write_json_atomic(
             temporary.write(serialized)
             temporary.flush()
             os.fsync(temporary.fileno())
-        if _leaf_matches_protected_input(
-            target.directory_fd,
-            target.name,
-            target.protected_file_identities,
-        ):
-            raise DecisionWriteError(
-                "output path must not overwrite an evaluation input"
-            )
+        _validate_pinned_output_target(target)
         os.replace(
             temporary_name,
             target.name,
@@ -248,6 +243,24 @@ def _leaf_matches_protected_input(
         return False
     observed_identity = observed.st_dev, observed.st_ino
     return observed_identity in protected_identities
+
+
+def _validate_pinned_output_target(target: _OutputTarget) -> None:
+    if directory_is_within(
+        target.directory_fd,
+        target.protected_directory_identity,
+    ):
+        raise DecisionWriteError(
+            "output path must not be inside the benchmark checkout"
+        )
+    if _leaf_matches_protected_input(
+        target.directory_fd,
+        target.name,
+        target.protected_file_identities,
+    ):
+        raise DecisionWriteError(
+            "output path must not overwrite an evaluation input"
+        )
 
 
 def _prepare_output_target(
@@ -335,6 +348,7 @@ def _prepare_output_target(
             name=output_name,
             display_path=output,
             protected_file_identities=tuple(protected_identities),
+            protected_directory_identity=protected_identity,
         )
         directory_fd = None
         return target

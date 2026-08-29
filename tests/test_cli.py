@@ -391,6 +391,41 @@ class CliTests(unittest.TestCase):
         self.assertIn("unable to open evaluation input", stderr)
         self.assertFalse(output.exists())
 
+    def test_input_ancestor_directory_replacement_during_pin_is_rejected(
+        self,
+    ) -> None:
+        requested_directory = self.base / "requested-directory"
+        requested_inner = requested_directory / "inner"
+        requested_inner.mkdir(parents=True)
+        report = requested_inner / "report.json"
+        report.write_bytes((FIXTURES / "clawprobench_go.json").read_bytes())
+        saved_directory = self.base / "saved-directory"
+        substitute_directory = self.base / "substitute-directory"
+        substitute_inner = substitute_directory / "inner"
+        substitute_inner.mkdir(parents=True)
+        (substitute_inner / "report.json").write_bytes(
+            (FIXTURES / "clawprobench_no_go.json").read_bytes()
+        )
+        output = self.project_root / "decision.json"
+        original_resolve = Path.resolve
+        swapped = False
+
+        def resolve_then_replace(path: Path, *args: object, **kwargs: object) -> Path:
+            nonlocal swapped
+            resolved = original_resolve(path, *args, **kwargs)  # type: ignore[arg-type]
+            if path == report and not swapped:
+                swapped = True
+                requested_directory.rename(saved_directory)
+                substitute_directory.rename(requested_directory)
+            return resolved
+
+        with patch.object(Path, "resolve", resolve_then_replace):
+            code, _, stderr = self.invoke(self.evaluate_args(report, output))
+
+        self.assertEqual(2, code)
+        self.assertIn("unable to open evaluation input", stderr)
+        self.assertFalse(output.exists())
+
     def test_validated_checkout_rename_cannot_redirect_output_into_it(self) -> None:
         safe_directory = self.project_root / "safe"
         safe_directory.mkdir()
@@ -418,6 +453,29 @@ class CliTests(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertIn("must not be inside the benchmark checkout", stderr)
         self.assertFalse((renamed_checkout / "decision.json").exists())
+
+    def test_output_directory_moved_into_checkout_before_write_is_rejected(
+        self,
+    ) -> None:
+        safe_directory = self.project_root / "safe-output"
+        safe_directory.mkdir()
+        output = safe_directory / "decision.json"
+
+        with _prepare_output_target(
+            output,
+            protected_files=(FIXTURES / "clawprobench_go.json", POLICY, self.manifest),
+            protected_directory=self.checkout,
+        ) as target:
+            moved_directory = self.checkout / "moved-output"
+            safe_directory.rename(moved_directory)
+            with self.assertRaisesRegex(
+                ValueError,
+                "must not be inside the benchmark checkout",
+            ):
+                _write_json_atomic(target, {"decision": "go"})
+
+        self.assertFalse((moved_directory / "decision.json").exists())
+        self.assertEqual([], list(moved_directory.iterdir()))
 
     def test_output_leaf_symlink_is_replaced_without_overwriting_its_target(self) -> None:
         victim = self.project_root / "victim.txt"
