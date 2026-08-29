@@ -35,7 +35,6 @@ class IntegrationEvidence:
         return {
             "adapter": self.adapter,
             "name": self.name,
-            "checkout_path": str(self.checkout_path),
             "repository_url": self.repository_url,
             "commit": self.commit,
         }

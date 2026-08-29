@@ -61,6 +61,8 @@ class CliTests(unittest.TestCase):
         self.assertTrue(document["valid"])
         self.assertEqual("clawprobench", document["integration"]["adapter"])
         self.assertEqual("SyntheticBench", document["integration"]["name"])
+        self.assertNotIn("checkout_path", document["integration"])
+        self.assertNotIn(str(self.base), stdout)
 
     def test_doctor_reports_invalid_integration_and_returns_two(self) -> None:
         (self.checkout / "dirty.txt").write_text("dirty\n", encoding="utf-8")
