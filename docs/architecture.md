@@ -79,7 +79,10 @@ The integration manifest pins the expected origin and full Git commit. Validatio
 - `git rev-parse --show-prefix`;
 - `git rev-parse HEAD`;
 - `git remote get-url origin`;
-- `git status --porcelain --untracked-files=all`.
+- `git status --porcelain --untracked-files=all`;
+- `git ls-files --others` without exclude rules;
+- `git ls-files -v -z` to reject assume-unchanged entries and skip-worktree
+  entries that remain present (absent sparse-checkout entries are allowed).
 
 Git hooks and fsmonitor are disabled for these read-only subprocesses, terminal prompts are disabled, and `GIT_OPTIONAL_LOCKS=0` prevents status checks from refreshing the upstream index. The validator also disables Git's untracked cache, ignores global/system Git configuration, and removes inherited `GIT_*` variables before setting its explicit safe environment. This prevents ambient `GIT_DIR`, `GIT_WORK_TREE`, or index overrides from redirecting a probe away from the pinned checkout. Validation never fetches, checks out, resets, cleans, or writes upstream files.
 
@@ -112,6 +115,14 @@ read and for creating and replacing the decision file, so
 concurrent path and parent-symlink swaps cannot substitute an input, mix
 checkout validation, or redirect the write into the checkout. The resolved
 checkout path stays internal and is not serialized.
+
+These checks validate path identity and ancestry when descriptors are acquired
+and immediately before the output commit. v0 does not claim to contain a
+hostile local process that already has write access to both the output and
+benchmark directory trees and races a directory rename between the final
+validation syscall and `os.replace`; such a process can already modify the
+read-only checkout directly. Run evaluations in a filesystem namespace not
+writable by untrusted concurrent processes.
 
 ## Failure Handling
 

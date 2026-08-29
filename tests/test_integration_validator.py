@@ -105,6 +105,35 @@ class IntegrationValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(IntegrationError, "worktree is not clean"):
             validate_integration(self.manifest())
 
+    def test_repository_excludes_file_cannot_hide_untracked_files(self) -> None:
+        excludes = self.base / "local-excludes"
+        excludes.write_text("hidden.txt\n", encoding="utf-8")
+        run_git(self.checkout, "config", "core.excludesFile", str(excludes))
+        (self.checkout / "hidden.txt").write_text("dirty\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(IntegrationError, "worktree is not clean"):
+            validate_integration(self.manifest())
+
+    def test_assume_unchanged_cannot_hide_tracked_modification(self) -> None:
+        run_git(self.checkout, "update-index", "--assume-unchanged", "README.md")
+        (self.checkout / "README.md").write_text("modified\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            IntegrationError,
+            "assume-unchanged",
+        ):
+            validate_integration(self.manifest())
+
+    def test_present_skip_worktree_file_cannot_hide_modification(self) -> None:
+        run_git(self.checkout, "update-index", "--skip-worktree", "README.md")
+        (self.checkout / "README.md").write_text("modified\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            IntegrationError,
+            "skip-worktree",
+        ):
+            validate_integration(self.manifest())
+
     def test_validation_does_not_refresh_or_rewrite_git_index(self) -> None:
         index_path = self.checkout / ".git" / "index"
         before = index_path.read_bytes()

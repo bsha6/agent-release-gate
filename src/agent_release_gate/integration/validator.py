@@ -250,6 +250,7 @@ def validate_integration(manifest: IntegrationManifest) -> IntegrationEvidence:
                 f"unexpected origin URL: expected {manifest.repository_url}, observed {observed_origin}"
             )
 
+        worktree_dirty = False
         status = _git(
             checkout_fd,
             "status",
@@ -259,7 +260,48 @@ def validate_integration(manifest: IntegrationManifest) -> IntegrationEvidence:
         if status.returncode != 0:
             failures.append("unable to determine worktree status")
         elif status.stdout:
+            worktree_dirty = True
+
+        untracked = _git(checkout_fd, "ls-files", "--others")
+        if untracked.returncode != 0:
+            failures.append("unable to enumerate untracked worktree files")
+        elif untracked.stdout:
+            worktree_dirty = True
+
+        if worktree_dirty:
             failures.append("worktree is not clean")
+
+        index_flags = _git(checkout_fd, "ls-files", "-v", "-z")
+        if index_flags.returncode != 0:
+            failures.append("unable to inspect index flags")
+        else:
+            entries = [
+                entry
+                for entry in index_flags.stdout.split("\0")
+                if entry
+            ]
+            if any(entry[0].islower() for entry in entries):
+                failures.append("index contains assume-unchanged entries")
+            present_skip_worktree = False
+            for entry in entries:
+                if not entry.startswith("S "):
+                    continue
+                try:
+                    os.stat(
+                        entry[2:],
+                        dir_fd=checkout_fd,
+                        follow_symlinks=False,
+                    )
+                except (FileNotFoundError, NotADirectoryError):
+                    continue
+                except OSError as exc:
+                    failures.append(
+                        f"unable to inspect skip-worktree path {entry[2:]}: {exc}"
+                    )
+                    continue
+                present_skip_worktree = True
+            if present_skip_worktree:
+                failures.append("index contains present skip-worktree entries")
 
         for prohibited_path in manifest.prohibited_paths:
             try:

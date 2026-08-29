@@ -147,6 +147,10 @@ for the complete build, test, CI, upstream, and audit inventory.
 - v0 preserves the report timestamp but does not enforce evidence freshness.
 - Custom policies and integration manifests are trusted local configuration.
 - The CLI does not fetch or execute benchmark code.
+- Filesystem identity and ancestry are checked at acquisition and immediately
+  before output commit. A hostile concurrent process with write access to both
+  directory trees is outside the v0 threat model; run evaluations where
+  untrusted processes cannot rename the output or benchmark directories.
 - Decision output must be separate from reports, policies, manifests, and
   benchmark checkouts; protected paths are rejected after symlink resolution
   while input files, the benchmark checkout, and the output directory remain
