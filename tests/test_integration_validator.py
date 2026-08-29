@@ -181,6 +181,20 @@ class IntegrationValidatorTests(unittest.TestCase):
             self.manifest(updates={"checkout_path": str(self.checkout.resolve())})
         with self.assertRaisesRegex(IntegrationError, "checkout_path must resolve to a direct sibling"):
             self.manifest(updates={"checkout_path": "../../escape"})
+        for self_reference in (".", "../agent-release-gate"):
+            with self.subTest(checkout_path=self_reference):
+                with self.assertRaisesRegex(
+                    IntegrationError,
+                    "checkout_path must resolve to a direct sibling",
+                ):
+                    self.manifest(updates={"checkout_path": self_reference})
+        project_alias = self.base / "project-alias"
+        project_alias.symlink_to(self.project_root, target_is_directory=True)
+        with self.assertRaisesRegex(
+            IntegrationError,
+            "checkout_path must resolve to a direct sibling",
+        ):
+            self.manifest(updates={"checkout_path": "../project-alias"})
         with self.assertRaisesRegex(IntegrationError, "commit must be 40 lowercase hexadecimal"):
             self.manifest(updates={"commit": "ABC"})
         with self.assertRaisesRegex(IntegrationError, "prohibited_paths entries must be safe relative paths"):

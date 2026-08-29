@@ -38,15 +38,16 @@ For `doctor`:
 
 For `evaluate`:
 
-1. Perform the same integration validation.
-2. Select the named benchmark adapter and require it to match the manifest.
-3. Open and validate the output directory, rejecting benchmark-checkout or
+1. Open and pin the report, policy, and integration manifest as regular files.
+2. Perform integration validation from the pinned manifest.
+3. Select the named benchmark adapter and require it to match the manifest.
+4. Open and validate the output directory, rejecting benchmark-checkout or
    input-file targets while holding the directory descriptor through the write.
-4. Validate and normalize the report into `BenchmarkEvidence`.
-5. Parse and validate the TOML policy, retaining its SHA-256 digest.
-6. Apply every gate rule in stable order.
-7. Combine decision, observed metrics, report identity, integration provenance, policy identity, and UTC evaluation time.
-8. Write sorted, indented JSON to a sibling temporary file, sync it, and replace the target atomically.
+5. Validate and normalize the pinned report into `BenchmarkEvidence`.
+6. Parse and validate the pinned TOML policy, retaining its SHA-256 digest.
+7. Apply every gate rule in stable order.
+8. Combine decision, observed metrics, report identity, integration provenance, policy identity, and UTC evaluation time.
+9. Write sorted, indented JSON to a sibling temporary file, sync it, and replace the target atomically.
 
 Input errors are distinct from release outcomes. A valid `no_go` is exit code `1`; malformed evidence or unproven provenance is exit code `2` and produces no decision.
 
@@ -84,16 +85,18 @@ Git hooks and fsmonitor are disabled for these read-only subprocesses, terminal 
 The integration manifest declares the adapter that may consume its evidence.
 This prevents a CLI invocation from presenting one benchmark's source
 provenance alongside a different adapter. Prohibited paths are detected even
-when represented by dangling symlinks.
+when represented by dangling symlinks. The checkout must resolve to a distinct
+direct sibling; the project itself and sibling symlinks back to it are rejected.
 
-Before reading evaluation inputs, the CLI resolves the requested output path,
-opens its directory without following the final path component, and verifies
-the opened directory by device and inode. It rejects paths inside the benchmark
-checkout and paths equal to the report, policy, or integration manifest,
-including aliases reached through symlinked parents. The same directory
-descriptor is used to create and replace the decision file, so a concurrent
-symlink-parent swap cannot redirect the write. The resolved checkout stays
-internal and is not serialized.
+Before evaluation, the CLI opens and pins the report, policy, and integration
+manifest by file and parent-directory descriptor. It then resolves the requested
+output path, opens its directory without following the final path component,
+and verifies the opened directory by device and inode. It rejects paths inside
+the benchmark checkout and paths equal to a pinned input, including aliases
+reached through symlinked parents. Pinned descriptors are used for every input
+read and for creating and replacing the decision file, so concurrent parent
+symlink swaps cannot substitute an input or redirect the write. The resolved
+checkout stays internal and is not serialized.
 
 ## Failure Handling
 

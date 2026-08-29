@@ -4,9 +4,10 @@ import argparse
 import json
 import os
 import secrets
+import stat
 import sys
 from collections.abc import Callable, Sequence
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,40 @@ from agent_release_gate.integration.validator import (
 
 class DecisionWriteError(ValueError):
     """Raised when a completed decision cannot be written atomically."""
+
+
+class InputReadError(ValueError):
+    """Raised when an evaluation input cannot be pinned for a safe read."""
+
+
+@dataclass(slots=True)
+class _InputTarget:
+    file_fd: int
+    directory_fd: int
+    name: str
+    display_path: Path
+
+    @property
+    def read_path(self) -> Path:
+        return Path("/dev/fd") / str(self.file_fd)
+
+    def close(self) -> None:
+        file_fd = self.file_fd
+        directory_fd = self.directory_fd
+        self.file_fd = -1
+        self.directory_fd = -1
+        for descriptor in (file_fd, directory_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+    def __enter__(self) -> _InputTarget:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
 
 @dataclass(slots=True)
@@ -106,6 +141,44 @@ def _directory_flags() -> int:
 
 def _open_directory(path: Path) -> int:
     return os.open(path, _directory_flags())
+
+
+def _prepare_input_target(path: Path) -> _InputTarget:
+    directory_fd: int | None = None
+    file_fd: int | None = None
+    try:
+        resolved_path = path.resolve(strict=True)
+        directory_fd = _open_directory(resolved_path.parent)
+        file_fd = os.open(
+            resolved_path.name,
+            os.O_RDONLY
+            | os.O_NOFOLLOW
+            | os.O_NONBLOCK
+            | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=directory_fd,
+        )
+        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            raise InputReadError(f"evaluation input is not a regular file: {path}")
+        target = _InputTarget(
+            file_fd=file_fd,
+            directory_fd=directory_fd,
+            name=resolved_path.name,
+            display_path=path,
+        )
+        file_fd = None
+        directory_fd = None
+        return target
+    except InputReadError:
+        raise
+    except OSError as exc:
+        raise InputReadError(f"unable to open evaluation input {path}: {exc}") from exc
+    finally:
+        for descriptor in (file_fd, directory_fd):
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
 
 
 def _same_directory(left_fd: int, right_fd: int) -> bool:
@@ -209,12 +282,18 @@ def _validate_output_path(
 def _prepare_output_target(
     output: Path,
     *,
-    protected_files: Sequence[Path],
+    protected_files: Sequence[Path | _InputTarget],
     protected_directory: Path,
 ) -> _OutputTarget:
-    resolved_output = _validate_output_path(
+    protected_paths = tuple(
+        protected.display_path
+        if isinstance(protected, _InputTarget)
+        else protected
+        for protected in protected_files
+    )
+    _validate_output_path(
         output,
-        protected_files=protected_files,
+        protected_files=protected_paths,
         protected_directory=protected_directory,
     )
     output_name = output.name
@@ -230,17 +309,27 @@ def _prepare_output_target(
             )
 
         for protected in protected_files:
-            resolved_protected = protected.resolve(strict=False)
-            if output_name != resolved_protected.name:
+            if isinstance(protected, _InputTarget):
+                protected_name = protected.name
+                protected_parent_fd = protected.directory_fd
+                close_protected_parent = False
+            else:
+                resolved_protected = protected.resolve(strict=False)
+                protected_name = resolved_protected.name
+                protected_parent_fd = _open_directory(resolved_protected.parent)
+                close_protected_parent = True
+            if output_name != protected_name:
+                if close_protected_parent:
+                    os.close(protected_parent_fd)
                 continue
-            protected_parent_fd = _open_directory(resolved_protected.parent)
             try:
                 if _same_directory(directory_fd, protected_parent_fd):
                     raise DecisionWriteError(
                         "output path must not overwrite an evaluation input"
                     )
             finally:
-                os.close(protected_parent_fd)
+                if close_protected_parent:
+                    os.close(protected_parent_fd)
 
         target = _OutputTarget(
             directory_fd=directory_fd,
@@ -288,18 +377,28 @@ def _evaluate(
     clock: Callable[[], datetime],
 ) -> int:
     adapter = get_adapter(args.adapter)
-    integration = _validated_integration(
-        args.integration,
-        expected_adapter=args.adapter,
-    )
-    output_target = _prepare_output_target(
-        args.output,
-        protected_files=(args.report, args.policy, args.integration),
-        protected_directory=integration.checkout_path,
-    )
-    with output_target:
-        evidence = adapter.load(args.report, source_version=integration.commit)
-        policy, policy_sha256 = load_policy(args.policy)
+    with ExitStack() as resources:
+        report_input = resources.enter_context(_prepare_input_target(args.report))
+        policy_input = resources.enter_context(_prepare_input_target(args.policy))
+        integration_input = resources.enter_context(
+            _prepare_input_target(args.integration)
+        )
+        integration = _validated_integration(
+            integration_input.read_path,
+            expected_adapter=args.adapter,
+        )
+        output_target = resources.enter_context(
+            _prepare_output_target(
+                args.output,
+                protected_files=(report_input, policy_input, integration_input),
+                protected_directory=integration.checkout_path,
+            )
+        )
+        evidence = adapter.load(
+            report_input.read_path,
+            source_version=integration.commit,
+        )
+        policy, policy_sha256 = load_policy(policy_input.read_path)
         decision = evaluate(evidence, policy)
 
         document = decision.to_dict()

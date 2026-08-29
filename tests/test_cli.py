@@ -11,11 +11,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from agent_release_gate.adapters.registry import get_adapter
 from agent_release_gate.cli import (
     _prepare_output_target,
     _write_json_atomic,
     run,
 )
+from agent_release_gate.domain.models import BenchmarkEvidence
 from tests.support import create_git_repo, write_manifest
 
 
@@ -262,6 +264,46 @@ class CliTests(unittest.TestCase):
             json.loads((safe_directory / "decision.json").read_text()),
         )
         self.assertFalse((self.checkout / "decision.json").exists())
+
+    def test_input_parent_symlink_swap_cannot_change_or_overwrite_pinned_report(
+        self,
+    ) -> None:
+        reports = self.base / "reports"
+        reports.mkdir()
+        report = reports / "report.json"
+        original_report = (FIXTURES / "clawprobench_go.json").read_bytes()
+        report.write_bytes(original_report)
+        linked_reports = self.project_root / "linked-reports"
+        linked_reports.symlink_to(reports, target_is_directory=True)
+        linked_report = linked_reports / "report.json"
+        output = self.project_root / "report.json"
+        output.write_bytes((FIXTURES / "clawprobench_no_go.json").read_bytes())
+        delegate = get_adapter("clawprobench")
+        project_root = self.project_root
+
+        class SwappingAdapter:
+            def load(
+                self,
+                report_path: Path,
+                *,
+                source_version: str,
+            ) -> BenchmarkEvidence:
+                linked_reports.unlink()
+                linked_reports.symlink_to(project_root, target_is_directory=True)
+                return delegate.load(report_path, source_version=source_version)
+
+        with patch(
+            "agent_release_gate.cli.get_adapter",
+            return_value=SwappingAdapter(),
+        ):
+            code, _, stderr = self.invoke(self.evaluate_args(linked_report, output))
+
+        document = json.loads(output.read_text())
+        self.assertEqual(0, code)
+        self.assertEqual("", stderr)
+        self.assertEqual("go", document["decision"])
+        self.assertEqual("agent-go", document["benchmark"]["subject"])
+        self.assertEqual(original_report, report.read_bytes())
 
     def test_output_leaf_symlink_is_replaced_without_overwriting_its_target(self) -> None:
         victim = self.project_root / "victim.txt"

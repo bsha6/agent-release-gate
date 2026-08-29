@@ -92,7 +92,10 @@ def load_manifest(path: Path, *, project_root: Path) -> IntegrationManifest:
 
     resolved_project_root = project_root.resolve()
     checkout_path = (resolved_project_root / checkout_relative).resolve()
-    if checkout_path.parent != resolved_project_root.parent:
+    if (
+        checkout_path == resolved_project_root
+        or checkout_path.parent != resolved_project_root.parent
+    ):
         raise IntegrationError("checkout_path must resolve to a direct sibling of the project")
 
     commit = _nonempty_string(raw, "commit")

@@ -60,9 +60,10 @@ PYTHONPATH=src python3.14 -m agent_release_gate evaluate \
   --output decisions/release-decision.json
 ```
 
-The output is written atomically through a held directory descriptor. A failed
-evaluation leaves an existing output file unchanged, and a concurrent
-symlink-parent swap cannot redirect the write.
+Evaluation inputs are pinned by file descriptor, and output is written
+atomically through a held directory descriptor. A failed evaluation leaves an
+existing output file unchanged; concurrent parent-symlink swaps cannot
+substitute an input or redirect the write.
 
 Exit codes are:
 
@@ -144,7 +145,7 @@ for the complete build, test, CI, upstream, and audit inventory.
 - The CLI does not fetch or execute benchmark code.
 - Decision output must be separate from reports, policies, manifests, and
   benchmark checkouts; protected paths are rejected after symlink resolution
-  and the output directory remains pinned by descriptor through the write.
+  while input files and the output directory remain pinned by descriptor.
 - The source distribution includes the default policy and integration manifest.
   A standalone wheel contains only the CLI package, so invoke it from a source
   checkout or pass explicit `--policy` and `--integration` paths.
