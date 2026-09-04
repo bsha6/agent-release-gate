@@ -41,6 +41,16 @@ inputs produce equivalent substantive output.
 
 ### 1. Create the expected checkout layout
 
+Clone Agent Release Gate into the directory that will contain both repositories:
+
+```bash
+cd /path/to/Projects
+git clone \
+  --no-recurse-submodules \
+  -c core.hooksPath=/dev/null \
+  https://github.com/bsha6/agent-release-gate.git agent-release-gate
+```
+
 The project and audited benchmark checkout must be direct siblings:
 
 ```text
