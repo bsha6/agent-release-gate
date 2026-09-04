@@ -10,7 +10,7 @@ benchmark that produced that evidence. Start with [README.md](README.md); see
   exits nonzero. Exit `0` confirms provenance only; it is not release approval.
   Do not evaluate evidence against an unproven integration.
 - **Keep ClawProBench read-only.** Never install, import, execute, fetch, reset,
-  clean, or modify its checkout. The default integration expects the clean,
+  clean, or modify its checkout. The default integration expects a clean
   checkout at `../ClawProBench` on commit
   `c4b8395854fe0752eef435b44f140366efd44d8e`, without `ironclaw/` or
   `nanoclaw/` checked out.
